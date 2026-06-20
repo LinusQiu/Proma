@@ -348,7 +348,7 @@ export async function queueAgentMessage(
     input.userMessage,
     undefined,
     input.uuid,
-    { interrupt: input.interrupt },
+    { interrupt: input.interrupt, modelId: input.modelId },
   )
 }
 

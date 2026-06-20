@@ -497,6 +497,9 @@ export class AgentOrchestrator {
   /** 运行中会话的当前权限模式（支持运行时动态切换） */
   private sessionPermissionModes = new Map<string, PromaPermissionMode>()
 
+  /** 运行中会话的当前模型 ID（注入消息时对比，变化则调 adapter.setModel 切 SDK 侧模型） */
+  private sessionRunningModels = new Map<string, string>()
+
   constructor(adapter: AgentProviderAdapter, eventBus: AgentEventBus) {
     this.adapter = adapter
     this.eventBus = eventBus
@@ -1013,6 +1016,8 @@ export class AgentOrchestrator {
     // 否则用本地 runGeneration 作为回退（headless 模式等无渲染进程场景）
     const streamStartedAt = input.startedAt ?? runGeneration
     this.activeSessions.set(sessionId, runGeneration)
+    // 记录本轮运行的模型，供注入通道（queueMessage）对比是否需要 setModel 切换
+    this.sessionRunningModels.set(sessionId, modelId || DEFAULT_MODEL_ID)
 
     const releaseActiveRun = (): void => {
       // 在发送 STREAM_COMPLETE 前释放 active slot，避免渲染进程已进入空闲态、
@@ -1020,6 +1025,7 @@ export class AgentOrchestrator {
       if (this.activeSessions.get(sessionId) !== runGeneration) return
       this.activeSessions.delete(sessionId)
       this.sessionPermissionModes.delete(sessionId)
+      this.sessionRunningModels.delete(sessionId)
       this.queuedMessageUuids.delete(sessionId)
     }
     const completeRun = (
@@ -2325,7 +2331,7 @@ export class AgentOrchestrator {
     text: string,
     _priority?: string,
     presetUuid?: string,
-    opts?: { interrupt?: boolean },
+    opts?: { interrupt?: boolean; modelId?: string },
   ): Promise<string> {
     if (!this.activeSessions.has(sessionId)) {
       throw new Error(`[Agent 编排] 会话未运行，无法追加消息: ${sessionId}`)
@@ -2341,6 +2347,20 @@ export class AgentOrchestrator {
     const uuids = this.queuedMessageUuids.get(sessionId) ?? new Set<string>()
     uuids.add(uuid)
     this.queuedMessageUuids.set(sessionId, uuids)
+
+    // 模型切换：用户在 Agent 运行中（streaming / backgroundWaiting）切了模型后追加消息，
+    // 注入前先把 SDK 侧模型切到新模型，否则本轮注入仍用启动时的旧模型。
+    if (opts?.modelId && this.adapter.setModel) {
+      const currentModel = this.sessionRunningModels.get(sessionId)
+      if (currentModel !== opts.modelId) {
+        try {
+          await this.adapter.setModel(sessionId, opts.modelId)
+          this.sessionRunningModels.set(sessionId, opts.modelId)
+        } catch (error) {
+          console.warn(`[Agent 编排] 注入前切换模型失败（将沿用旧模型继续）:`, error)
+        }
+      }
+    }
 
     // 构造 SDKUserMessage 并注入（强制 'now' 优先级）
     const sdkMessage = {

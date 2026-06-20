@@ -1301,6 +1301,7 @@ export function AgentView({ sessionId }: { sessionId: string }): React.ReactElem
         sessionId,
         userMessage: effectiveText,
         uuid: localUuid,
+        modelId: agentModelId || undefined,
         interrupt: streaming,
       }).catch((error) => {
         console.error('[AgentView] 追加消息失败:', error)

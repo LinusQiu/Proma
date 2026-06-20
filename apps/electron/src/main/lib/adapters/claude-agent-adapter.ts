@@ -1009,6 +1009,22 @@ export class ClaudeAgentAdapter implements AgentProviderAdapter {
     )
     console.log(`[Claude 适配器] 权限模式已切换: sessionId=${sessionId}, mode=${mode}`)
   }
+
+  /**
+   * 动态切换活跃查询的模型
+   *
+   * 通过 SDK Query.setModel() 在查询进行中切换模型。
+   * 典型场景：用户在 Agent 运行中（streaming / backgroundWaiting）通过 ModelSelector 切换模型后追加消息。
+   */
+  async setModel(sessionId: string, model: string): Promise<void> {
+    const query = activeQueries.get(sessionId)
+    if (!query) {
+      console.warn(`[Claude 适配器] 无活跃查询，跳过模型切换: ${sessionId}`)
+      return
+    }
+    await (query as ReturnType<typeof import('@anthropic-ai/claude-agent-sdk').query>).setModel(model)
+    console.log(`[Claude 适配器] 模型已切换: sessionId=${sessionId}, model=${model}`)
+  }
 }
 
 /**

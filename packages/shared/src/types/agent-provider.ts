@@ -61,4 +61,6 @@ export interface AgentProviderAdapter {
   cancelQueuedMessage?(sessionId: string, messageUuid: string): Promise<void>
   /** 动态切换活跃查询的权限模式（可选，仅支持 SDK 原生 setPermissionMode 的 Provider） */
   setPermissionMode?(sessionId: string, mode: string): Promise<void>
+  /** 动态切换活跃查询的模型（可选，仅支持 SDK 原生 setModel 的 Provider） */
+  setModel?(sessionId: string, model: string): Promise<void>
 }

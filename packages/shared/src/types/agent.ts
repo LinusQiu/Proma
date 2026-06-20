@@ -876,6 +876,12 @@ export interface AgentQueueMessageInput {
   /** 前端预生成的 UUID（用于乐观更新去重） */
   uuid?: string
   /**
+   * 当前会话选中的模型 ID。
+   * 用户在 Agent 运行中（streaming / backgroundWaiting）切换模型后追加消息时传入，
+   * 后端在注入前调用 SDK setModel 切换；与本轮启动时的模型相同则后端跳过切换。
+   */
+  modelId?: string
+  /**
    * 软中断当前 Agent turn 后再追加消息。
    * true：先调用 SDK query.interrupt() 立即打断正在输出的 turn，再注入消息。
    * false / undefined：排队追加（默认行为，turn 结束后才会被消费）。
