@@ -60,6 +60,7 @@ import {
   backgroundTasksAtomFamily,
   sessionPersistedPermissionModeAtom,
   sessionExistsAtom,
+  automationGroupOrderAtom,
 } from '@/atoms/agent-atoms'
 import type { SessionIndicatorStatus } from '@/atoms/agent-atoms'
 import { previewPanelOpenMapAtom, previewFileMapAtom } from '@/atoms/preview-atoms'
@@ -450,15 +451,7 @@ export function LeftSidebar({ width }: LeftSidebarProps): React.ReactElement {
   /** 项目拖拽排序状态 */
   const [dragProjectId, setDragProjectId] = React.useState<string | null>(null)
   const [projectDropIndicator, setProjectDropIndicator] = React.useState<{ id: string; position: 'before' | 'after' } | null>(null)
-  /** 合成「自动任务」组在项目列表中的位置索引（0 = 最靠前，可拖拽调整并持久化到 settings） */
-  const [automationGroupOrder, setAutomationGroupOrder] = React.useState(0)
-  React.useEffect(() => {
-    window.electronAPI.getSettings()
-      .then((s) => {
-        if (typeof s.agentAutomationGroupOrder === 'number') setAutomationGroupOrder(s.agentAutomationGroupOrder)
-      })
-      .catch(() => { /* 读取失败时保持默认置顶 */ })
-  }, [])
+  const [automationGroupOrder, setAutomationGroupOrder] = useAtom(automationGroupOrderAtom)
   /** 新建项目输入状态 */
   const [creatingProject, setCreatingProject] = React.useState(false)
   const [newProjectName, setNewProjectName] = React.useState('')
