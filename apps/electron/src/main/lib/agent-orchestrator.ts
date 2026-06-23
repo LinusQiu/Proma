@@ -352,9 +352,15 @@ function buildContextPrompt(sessionId: string, currentUserMessage: string, sessi
 
   if (lines.length === 0) return currentUserMessage
 
-  // 注入 session 元信息，便于 Agent 在需要时读取完整历史
+  // 注入 session 元信息 + 强指令：兜底场景（resume 指针丢失）下，仅靠最近
+  // MAX_CONTEXT_MESSAGES 条摘要不足以让长任务无缝接续，必须引导模型先读取完整 JSONL，
+  // 避免「从零重新执行整个任务」（#903）。
   const sessionInfoBlock = sessionHint
-    ? `\n<session_info>\nSession ID: ${sessionId}\nSession CWD: ${sessionHint.agentCwd}\nNote: 上方为近期对话摘要。如需更多上下文，可读取 ~/${getConfigDirName()}/agent-sessions/${sessionId}.jsonl 获取完整历史。\n</session_info>\n`
+    ? `\n<session_info>\nSession ID: ${sessionId}\nSession CWD: ${sessionHint.agentCwd}\n` +
+      `完整历史: ~/${getConfigDirName()}/agent-sessions/${sessionId}.jsonl\n` +
+      `重要：上方仅为最近 ${MAX_CONTEXT_MESSAGES} 条对话摘要，可能不完整。在继续之前，` +
+      `请先读取上述完整历史文件，确认「已经完成了哪些工作、进行到哪一步」，` +
+      `然后从中断处继续，切勿重复执行已完成的步骤。\n</session_info>\n`
     : ''
 
   console.log(`[Agent 编排] buildContextPrompt: 读取 ${allMessages.length} 条消息，注入 ${lines.length} 条历史${sessionHint ? '（含 session 元信息）' : ''}`)
@@ -2062,15 +2068,15 @@ export class AgentOrchestrator {
 
           failRun(userFacingError, getAgentSessionMessages(sessionId), { startedAt: streamStartedAt })
 
-          // 根据错误类型决定是否保留 sdkSessionId
-          const shouldClearSession = !apiError || apiError.statusCode >= 500
-          if (existingSdkSessionId && shouldClearSession) {
-            try {
-              updateAgentSessionMeta(sessionId, { sdkSessionId: undefined })
-              console.log(`[Agent 编排] 已清除失效的 sdkSessionId`)
-            } catch { /* 忽略 */ }
-          } else if (existingSdkSessionId && !shouldClearSession) {
-            console.log(`[Agent 编排] 保留 sdkSessionId (API 错误 ${apiError?.statusCode})`)
+          // 保留 sdkSessionId，确保下一轮能继续 resume（修复 #903）。
+          // 此终止分支只会被「非 session-not-found」的错误命中（session 失效已在上文
+          // isSessionNotFoundError 分支单独处理并切到恢复模式）。网络断连、服务端 5xx、
+          // 未知错误都不代表 SDK 会话本身失效——其完整历史 JSONL 仍保存在
+          // ~/.proma/sdk-config/projects/.../{sdkSessionId}.jsonl 中，依旧可 resume。
+          // 此前这里对 `!apiError`（如普通断连解析不出状态码）一律清除指针，导致下一轮
+          // 退化为「仅回填最近 N 条」的冷启动，上下文从满载骤降（#903）。
+          if (existingSdkSessionId) {
+            console.log(`[Agent 编排] 保留 sdkSessionId 以便下一轮 resume（错误未表明会话失效）`)
           }
 
           return
