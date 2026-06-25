@@ -422,7 +422,14 @@ function getPersistedDelegationSession(parentSessionId: string, delegationId: st
 
   // 应用重启、恢复或旧数据修复后，父会话上下文可能暂时不完整。
   // delegationId 本身是 UUID；当全局只有唯一命中时，允许用它恢复，避免误报“当前会话下未找到”。
-  return sessions.length === 1 ? sessions[0] : undefined
+  // 但只有该会话未记录父会话、或父会话与当前一致时才接受，避免凭 UUID 跨父会话误恢复他人的委派。
+  if (sessions.length !== 1) return undefined
+  const unique = sessions[0]
+  if (!unique) return undefined
+  if (unique.parentSessionId == null || unique.parentSessionId === parentSessionId) {
+    return unique
+  }
+  return undefined
 }
 
 function recoverDelegationRecordFromSession(
@@ -432,7 +439,9 @@ function recoverDelegationRecordFromSession(
   fallbackPermissionMode: PromaPermissionMode | undefined,
 ): DelegationRecord {
   const state = buildRecoveredDelegationState({
-    parentSessionId,
+    // 与 getDelegationResult 保持一致：优先信任持久化记录里的父会话归属，
+    // 仅在缺失时回落到当前会话上下文，避免两条恢复路径对 owner 判断不一致。
+    parentSessionId: session.parentSessionId ?? parentSessionId,
     delegationId,
     session,
     fallbackPermissionMode,
