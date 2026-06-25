@@ -30,6 +30,7 @@ import {
 } from './agent-headless-runner-registry'
 import {
   MAX_RUNNING_DELEGATIONS_PER_PARENT,
+  buildRecoveredDelegationState,
   buildDelegationTaskWithSharedContext,
   buildDelegationPrompt,
   resolveDelegationPermissionMode,
@@ -248,6 +249,14 @@ function getRunningDelegationCount(parentSessionId: string): number {
     .length
 }
 
+function createDelegationCompletion(): Pick<DelegationRecord, 'completion' | 'resolveCompletion'> {
+  let resolveCompletion: () => void = () => {}
+  const completion = new Promise<void>((resolve) => {
+    resolveCompletion = resolve
+  })
+  return { completion, resolveCompletion }
+}
+
 function assertCanCreateDelegation(
   ctx: CollaborationToolContext,
   requestedCount = 1,
@@ -402,6 +411,52 @@ function getDelegationResult(parentSessionId: string, delegationId: string): Rec
   }
 }
 
+function getPersistedDelegationSession(parentSessionId: string, delegationId: string): AgentSessionMeta | undefined {
+  return listAgentSessions()
+    .find((item) => item.parentSessionId === parentSessionId && item.sourceDelegationId === delegationId)
+}
+
+function recoverDelegationRecordFromSession(
+  parentSessionId: string,
+  delegationId: string,
+  session: AgentSessionMeta,
+  fallbackPermissionMode: PromaPermissionMode | undefined,
+): DelegationRecord {
+  const state = buildRecoveredDelegationState({
+    parentSessionId,
+    delegationId,
+    session,
+    fallbackPermissionMode,
+  })
+  const completionHandle = createDelegationCompletion()
+  const record: DelegationRecord = {
+    ...state,
+    ...completionHandle,
+  }
+  if (record.status !== 'running') {
+    record.resolveCompletion()
+    delegations.set(delegationId, record)
+  }
+  return record
+}
+
+function getDelegationRecordForContinuation(
+  ctx: CollaborationToolContext,
+  delegationId: string,
+): DelegationRecord | undefined {
+  const live = delegations.get(delegationId)
+  if (live) {
+    if (live.parentSessionId !== ctx.sessionId) {
+      throw new Error(`委派不属于当前父会话: ${delegationId}`)
+    }
+    return live
+  }
+
+  const session = getPersistedDelegationSession(ctx.sessionId, delegationId)
+  if (!session) return undefined
+  return recoverDelegationRecordFromSession(ctx.sessionId, delegationId, session, ctx.permissionMode)
+}
+
 interface WaitResolution {
   /** 仍在内存中、需要实际等待的委派 */
   liveRecords: DelegationRecord[]
@@ -518,10 +573,7 @@ function startDelegation(
   const parentPermissionMode = getCurrentParentPermissionMode(parent, ctx.permissionMode)
   const permissionMode = resolveDelegationPermissionMode(parentPermissionMode, args.permissionMode)
 
-  let resolveCompletion: () => void = () => {}
-  const completion = new Promise<void>((resolve) => {
-    resolveCompletion = resolve
-  })
+  const { completion, resolveCompletion } = createDelegationCompletion()
 
   const child = createAgentSession(title, ctx.channelId, ctx.workspaceId, ctx.modelId)
   const rootSessionId = parent?.rootSessionId ?? parent?.id ?? ctx.sessionId
@@ -850,14 +902,11 @@ export async function injectAgentCollaborationMcpServer(
       ),
       sdk.tool(
         'continue_delegation',
-        '向已完成、已失败或已取消的协作子会话追加后续指令。子会话保留完整上下文继续执行。适合多轮协作场景：先让子 Agent 完成第一步，审查结果后继续下一步。',
+        '向已完成、已失败、已取消或已中断的协作子会话追加后续指令。子会话保留完整上下文继续执行。适合多轮协作场景：先让子 Agent 完成第一步，审查结果后继续下一步。',
         schemas.continueD,
         async (args) => {
-          const record = delegations.get(args.delegationId)
+          const record = getDelegationRecordForContinuation(ctx, args.delegationId)
           if (!record) throw new Error(`未找到当前会话下的委派: ${args.delegationId}`)
-          if (record.parentSessionId !== ctx.sessionId) {
-            throw new Error(`委派不属于当前父会话: ${args.delegationId}`)
-          }
           if (record.status === 'running') {
             throw new Error(`委派正在运行中，无法追加指令。请先等待完成或停止后再继续: ${args.delegationId}`)
           }
@@ -866,10 +915,9 @@ export async function injectAgentCollaborationMcpServer(
           record.error = undefined
           record.resultSummary = undefined
           record.completedAt = undefined
-          let resolveCompletion: () => void = () => {}
-          const completion = new Promise<void>((resolve) => { resolveCompletion = resolve })
-          record.completion = completion
-          record.resolveCompletion = resolveCompletion
+          const completionHandle = createDelegationCompletion()
+          record.completion = completionHandle.completion
+          record.resolveCompletion = completionHandle.resolveCompletion
 
           updateAgentSessionMeta(record.childSessionId, { delegationStatus: 'running' })
 
@@ -903,7 +951,7 @@ export async function injectAgentCollaborationMcpServer(
           })
 
           const timeout = new Promise<'timeout'>((resolve) => setTimeout(() => resolve('timeout'), DEFAULT_WAIT_SECONDS * 1000))
-          await Promise.race([completion, timeout])
+          await Promise.race([record.completion, timeout])
 
           return jsonResult({
             delegation: getDelegationSummary(record),
