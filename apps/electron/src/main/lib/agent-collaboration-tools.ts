@@ -386,8 +386,7 @@ function getDelegationResult(parentSessionId: string, delegationId: string): Rec
     return getDelegationSummary(live)
   }
 
-  const session = listAgentSessions()
-    .find((item) => item.parentSessionId === parentSessionId && item.sourceDelegationId === delegationId)
+  const session = getPersistedDelegationSession(parentSessionId, delegationId)
   if (!session) {
     throw new Error(`未找到当前会话下的委派: ${delegationId}`)
   }
@@ -398,7 +397,7 @@ function getDelegationResult(parentSessionId: string, delegationId: string): Rec
 
   return {
     delegationId,
-    parentSessionId,
+    parentSessionId: session.parentSessionId ?? parentSessionId,
     childSessionId: session.id,
     title: session.title,
     role: session.delegationRole,
@@ -411,9 +410,19 @@ function getDelegationResult(parentSessionId: string, delegationId: string): Rec
   }
 }
 
-function getPersistedDelegationSession(parentSessionId: string, delegationId: string): AgentSessionMeta | undefined {
+function findPersistedDelegationSessions(delegationId: string): AgentSessionMeta[] {
   return listAgentSessions()
-    .find((item) => item.parentSessionId === parentSessionId && item.sourceDelegationId === delegationId)
+    .filter((item) => item.sourceDelegationId === delegationId)
+}
+
+function getPersistedDelegationSession(parentSessionId: string, delegationId: string): AgentSessionMeta | undefined {
+  const sessions = findPersistedDelegationSessions(delegationId)
+  const scoped = sessions.find((item) => item.parentSessionId === parentSessionId)
+  if (scoped) return scoped
+
+  // 应用重启、恢复或旧数据修复后，父会话上下文可能暂时不完整。
+  // delegationId 本身是 UUID；当全局只有唯一命中时，允许用它恢复，避免误报“当前会话下未找到”。
+  return sessions.length === 1 ? sessions[0] : undefined
 }
 
 function recoverDelegationRecordFromSession(
