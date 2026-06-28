@@ -5,7 +5,8 @@
  * 支持的格式：
  * - PDF：使用 pdf-parse 提取文本，必要时用 pdfjs-dist 兜底
  * - DOC/WPS：使用 word-extractor 提取文本（旧版 Word/WPS Writer）
- * - DOCX/XLSX/PPTX/ODP/ODS/ODT：使用 mammoth/officeparser 提取文本
+ * - DOCX/XLSX/PPTX/ODP/ODS/ODT 及宏/模板变体：使用 mammoth/officeparser 提取文本
+ * - RTF：使用内置的 brace 感知解析器提取文本
  * - TXT/MD/CSV/JSON/XML/HTML/JS/TS/PY 等：直接 UTF-8 读取
  */
 
@@ -112,9 +113,9 @@ export async function extractTextFromFile(filePath: string): Promise<string> {
     return extractWpsOffice(filePath)
   }
 
-  // 富文本格式
+  // 富文本格式（RTF 不是 OOXML，单独解析）
   if (RICH_TEXT_EXTENSIONS.has(ext)) {
-    return extractOffice(filePath)
+    return extractRichText(filePath)
   }
 
   // 纯文本格式
@@ -164,7 +165,13 @@ async function extractLegacyWord(filePath: string): Promise<string> {
 }
 
 /**
- * 提取 Office/OpenDocument 文本（DOCX, XLSX, PPTX, ODT, ODP, ODS）
+ * 提取 Office/OpenDocument 文本（DOCX, XLSX, PPTX, ODT, ODP, ODS 及宏/模板变体）
+ *
+ * officeparser 仅按扩展名分发，且只认 docx/xlsx/pptx/odt/odp/ods/pdf 七种。
+ * 但宏启用（.docm/.xlsm/.pptm）、模板（.dotx/.xltx/.potx 等）、放映（.ppsx/.ppsm）
+ * 本质都是标准 OOXML zip 包，仅扩展名不同。officeparser 在收到 Buffer 时改用
+ * file-type 按文件内容嗅探类型，从而绕过扩展名白名单、正确路由这些变体。
+ * 因此这里统一以 Buffer 传入，让所有 OOXML 变体都能被解析。
  */
 async function extractOffice(filePath: string): Promise<string> {
   const ext = extname(filePath).toLowerCase()
@@ -180,8 +187,10 @@ async function extractOffice(filePath: string): Promise<string> {
     }
   }
 
-  const officeParser = await import('officeparser')
-  const text = await officeParser.parseOfficeAsync(filePath)
+  // 以 Buffer 传入，officeparser 会按内容（而非扩展名）嗅探并路由。
+  const buffer = readFileSync(filePath)
+  const officeParser = await import('officeparser') as unknown as OfficeParserModule
+  const text = await officeParser.parseOfficeAsync(buffer)
   console.log(`[文档解析] Office 提取完成: ${text.length} 字符`)
   return text
 }
@@ -199,8 +208,152 @@ async function extractWpsOffice(filePath: string): Promise<string> {
   }
 }
 
+/**
+ * 提取 RTF 富文本
+ *
+ * RTF 不是 OOXML zip，officeparser/mammoth 都无法解析。这里用一个轻量的
+ * brace 感知解析器：跳过字体表/颜色表/样式表等控制性分组，仅保留正文，
+ * 并把 \par \line \tab 等转成对应的空白字符。无需引入额外依赖。
+ */
+async function extractRichText(filePath: string): Promise<string> {
+  const raw = readFileSync(filePath, 'latin1')
+  const text = parseRtf(raw)
+  if (!text.trim()) {
+    throw new Error('RTF 文档解析后内容为空，请在编辑器中另存为 DOCX 或 PDF 后重试')
+  }
+  console.log(`[文档解析] RTF 提取完成: ${text.length} 字符`)
+  return text
+}
+
+/** 这些控制性分组（destination）只含元数据，不属于正文，整段跳过 */
+const RTF_SKIP_DESTINATIONS = new Set([
+  'fonttbl', 'colortbl', 'stylesheet', 'info', 'pict', 'object',
+  'themedata', 'colorschememapping', 'latentstyles', 'datastore',
+  'generator', 'listtable', 'listoverridetable', 'rsidtbl',
+  'mmathPr', 'wgrffmtfilter', 'xmlnstbl', 'fldinst',
+])
+
+/**
+ * 把 RTF 源串解析为纯文本。
+ *
+ * 逐字符扫描，用 depth 跟踪分组层级；遇到 \*\<dest> 或已知的控制性
+ * destination 时记录其所在层级，跳过该层级内的所有内容直到分组闭合。
+ */
+function parseRtf(rtf: string): string {
+  let out = ''
+  const skipStack: number[] = []
+  let depth = 0
+  let i = 0
+
+  const isSkipping = () => skipStack.length > 0
+
+  while (i < rtf.length) {
+    const ch = rtf[i]
+
+    if (ch === '{') {
+      depth++
+      i++
+      continue
+    }
+
+    if (ch === '}') {
+      if (skipStack.length > 0 && skipStack[skipStack.length - 1] === depth) {
+        skipStack.pop()
+      }
+      depth--
+      i++
+      continue
+    }
+
+    if (ch === '\\') {
+      const next = rtf[i + 1]
+
+      // 转义字符 \{ \} \\
+      if (next === '{' || next === '}' || next === '\\') {
+        if (!isSkipping()) out += next
+        i += 2
+        continue
+      }
+
+      // \* 标记一个可忽略的 destination，下一个控制字必然是分组内首词
+      if (next === '*') {
+        skipStack.push(depth)
+        i += 2
+        continue
+      }
+
+      // \uN 或 \uN- ：Unicode 字符（后面常跟一个回退字符，由 \ucN 决定数量，默认 1）
+      const uMatch = /^\\u(-?\d+)/.exec(rtf.slice(i))
+      if (uMatch) {
+        if (!isSkipping()) {
+          let code = parseInt(uMatch[1]!, 10)
+          if (code < 0) code += 65536
+          out += String.fromCharCode(code)
+        }
+        i += uMatch[0].length
+        // 跳过紧随其后的回退字符（一个字符或一个 \'xx）
+        if (rtf[i] === ' ') i++
+        if (rtf[i] === '\\' && rtf[i + 1] === '\'') i += 4
+        else if (rtf[i] && rtf[i] !== '\\' && rtf[i] !== '{' && rtf[i] !== '}') i++
+        continue
+      }
+
+      // \'xx ：单字节十六进制字符
+      const hexMatch = /^\\'([0-9a-fA-F]{2})/.exec(rtf.slice(i))
+      if (hexMatch) {
+        if (!isSkipping()) out += String.fromCharCode(parseInt(hexMatch[1]!, 16))
+        i += hexMatch[0].length
+        continue
+      }
+
+      // 普通控制字：\word 后可跟可选数字参数，再跟可选的一个空格分隔符
+      const wordMatch = /^\\([a-zA-Z]+)(-?\d+)? ?/.exec(rtf.slice(i))
+      if (wordMatch) {
+        const word = wordMatch[1]!
+        if (RTF_SKIP_DESTINATIONS.has(word)) {
+          skipStack.push(depth)
+        } else if (!isSkipping()) {
+          if (word === 'par' || word === 'pard' || word === 'line' || word === 'sect' || word === 'page') {
+            out += '\n'
+          } else if (word === 'tab' || word === 'cell') {
+            out += '\t'
+          } else if (word === 'row' || word === 'trowd') {
+            out += '\n'
+          }
+        }
+        i += wordMatch[0].length
+        continue
+      }
+
+      // 落单的反斜杠
+      i++
+      continue
+    }
+
+    // 普通字符
+    if (!isSkipping()) {
+      if (ch === '\n' || ch === '\r') {
+        // RTF 源里的裸换行无意义，忽略
+      } else {
+        out += ch
+      }
+    }
+    i++
+  }
+
+  return out
+    .replace(/[ \t]*\n[ \t]*/g, '\n')
+    .replace(/\n{3,}/g, '\n\n')
+    .replace(/[ \t]{2,}/g, ' ')
+    .trim()
+}
+
 interface MammothModule {
-  extractRawText(input: { path: string }): Promise<{ value: string }>
+  extractRawText(input: { path?: string, buffer?: Buffer }): Promise<{ value: string }>
+}
+
+interface OfficeParserModule {
+  parseOfficeAsync(file: string | Buffer): Promise<string>
 }
 
 async function extractDocxWithMammoth(filePath: string): Promise<string> {
