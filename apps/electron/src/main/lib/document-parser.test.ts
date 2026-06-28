@@ -144,4 +144,36 @@ describe('document-parser / 真实提取', () => {
     expect(text).toContain('中文')
     expect(text).toContain('text')
   })
+
+  // 回归：真实 Word/WordPad RTF 几乎都含 {\*\generator ...}，曾因 \* 与
+  // 已知 destination 叠加导致 skip 状态泄漏、吞掉全部正文。必须能正常提取。
+  test('提取含 generator 控制组的真实 Word 风格 RTF', async () => {
+    const path = join(dir, 'word.rtf')
+    const rtf = String.raw`{\rtf1\ansi\ansicpg1252\deff0{\fonttbl{\f0\fnil Calibri;}}`
+      + String.raw`{\*\generator Riched20 10.0.19041}\viewkind4\uc1\pard\f0\fs22 `
+      + String.raw`First paragraph\par Second paragraph\par}`
+    writeFileSync(path, rtf, 'latin1')
+    const text = await extractTextFromFile(path)
+    expect(text).toContain('First paragraph')
+    expect(text).toContain('Second paragraph')
+    expect(text).not.toContain('Riched20')
+    expect(text).not.toContain('generator')
+    expect(text).toMatch(/First paragraph\s*\n\s*Second paragraph/)
+  })
+
+  // 回归：多个可忽略 destination（含嵌套 \*）叠加，正文仍应完整保留、元数据不泄漏
+  test('提取含 listtable/info 等多个忽略分组的 RTF', async () => {
+    const path = join(dir, 'listtable.rtf')
+    const rtf = String.raw`{\rtf1\ansi\deff0{\fonttbl{\f0 Arial;}}`
+      + String.raw`{\*\listtable{\list\listtemplateid1{\listlevel\leveltext\'01;}}}`
+      + String.raw`{\*\generator Msftedit 5.41}{\info{\author Bob}{\*\company Acme}}`
+      + String.raw`\pard Body line one\par Body line two\par}`
+    writeFileSync(path, rtf, 'latin1')
+    const text = await extractTextFromFile(path)
+    expect(text).toContain('Body line one')
+    expect(text).toContain('Body line two')
+    expect(text).not.toContain('Acme')
+    expect(text).not.toContain('Bob')
+    expect(text).not.toContain('listtemplateid')
+  })
 })

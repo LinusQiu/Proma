@@ -241,11 +241,31 @@ const RTF_SKIP_DESTINATIONS = new Set([
  */
 function parseRtf(rtf: string): string {
   let out = ''
-  const skipStack: number[] = []
   let depth = 0
+  // 当前 skip 分组的起始 brace 层级；-1 表示未处于 skip 状态。
+  // 用单一值而非计数栈：一旦进入 skip，就忽略其内部所有重复的 skip 标记
+  // （例如 `{\*\generator ...}` 中 `\*` 与已知 destination `\generator` 会
+  // 各想标记一次），直到引发 skip 的那个分组闭合才解除——从根上避免“多次
+  // 标记、单次解除”导致的 skip 状态泄漏（会吞掉其后全部正文）。
+  let skipDepth = -1
+  // \ucN 指定每个 \uN 之后需要跳过的回退字符数，默认 1。
+  let uc = 1
   let i = 0
 
-  const isSkipping = () => skipStack.length > 0
+  const isSkipping = () => skipDepth >= 0
+
+  // 跳过 \uN 之后的 uc 个回退 token（一个 \'xx、一个转义字符或一个普通字符各算一个）
+  const skipUnicodeFallback = () => {
+    if (rtf[i] === ' ') i++ // 控制字与回退字符间的分隔空格
+    let remaining = uc
+    while (remaining > 0 && i < rtf.length) {
+      if (rtf[i] === '{' || rtf[i] === '}') break // 不吞分组定界符
+      if (rtf[i] === '\\' && rtf[i + 1] === '\'') i += 4 // \'xx
+      else if (rtf[i] === '\\' && (rtf[i + 1] === '{' || rtf[i + 1] === '}' || rtf[i + 1] === '\\')) i += 2
+      else i += 1
+      remaining--
+    }
+  }
 
   while (i < rtf.length) {
     const ch = rtf[i]
@@ -257,10 +277,9 @@ function parseRtf(rtf: string): string {
     }
 
     if (ch === '}') {
-      if (skipStack.length > 0 && skipStack[skipStack.length - 1] === depth) {
-        skipStack.pop()
-      }
       depth--
+      // 退出引发 skip 的分组层级时解除 skip
+      if (isSkipping() && depth < skipDepth) skipDepth = -1
       i++
       continue
     }
@@ -275,14 +294,14 @@ function parseRtf(rtf: string): string {
         continue
       }
 
-      // \* 标记一个可忽略的 destination，下一个控制字必然是分组内首词
+      // \* 标记当前分组为可忽略的 destination（仅在尚未 skip 时记录层级）
       if (next === '*') {
-        skipStack.push(depth)
+        if (!isSkipping()) skipDepth = depth
         i += 2
         continue
       }
 
-      // \uN 或 \uN- ：Unicode 字符（后面常跟一个回退字符，由 \ucN 决定数量，默认 1）
+      // \uN 或 \uN- ：Unicode 字符（后跟 uc 个回退字符）
       const uMatch = /^\\u(-?\d+)/.exec(rtf.slice(i))
       if (uMatch) {
         if (!isSkipping()) {
@@ -291,10 +310,7 @@ function parseRtf(rtf: string): string {
           out += String.fromCharCode(code)
         }
         i += uMatch[0].length
-        // 跳过紧随其后的回退字符（一个字符或一个 \'xx）
-        if (rtf[i] === ' ') i++
-        if (rtf[i] === '\\' && rtf[i + 1] === '\'') i += 4
-        else if (rtf[i] && rtf[i] !== '\\' && rtf[i] !== '{' && rtf[i] !== '}') i++
+        skipUnicodeFallback()
         continue
       }
 
@@ -310,8 +326,12 @@ function parseRtf(rtf: string): string {
       const wordMatch = /^\\([a-zA-Z]+)(-?\d+)? ?/.exec(rtf.slice(i))
       if (wordMatch) {
         const word = wordMatch[1]!
-        if (RTF_SKIP_DESTINATIONS.has(word)) {
-          skipStack.push(depth)
+        if (word === 'uc') {
+          // 即便处于 skip 状态也要跟踪 uc，确保退出 skip 后回退跳过仍准确
+          const n = parseInt(wordMatch[2] ?? '1', 10)
+          if (!Number.isNaN(n) && n >= 0) uc = n
+        } else if (RTF_SKIP_DESTINATIONS.has(word)) {
+          if (!isSkipping()) skipDepth = depth
         } else if (!isSkipping()) {
           if (word === 'par' || word === 'pard' || word === 'line' || word === 'sect' || word === 'page') {
             out += '\n'
