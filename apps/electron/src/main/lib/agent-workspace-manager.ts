@@ -20,6 +20,7 @@ import {
   parseSkillVersion,
 } from './config-paths'
 import type { AgentWorkspace, WorkspaceMcpConfig, SkillMeta, SkillImportSource, OtherWorkspaceSkillsGroup, WorkspaceCapabilities, SkillFileNode, SkillFileContent } from '@proma/shared'
+import { RESERVED_BUILTIN_KEYS } from './builtin-mcp/baseline'
 
 interface AgentWorkspacesIndex {
   version: number
@@ -442,6 +443,25 @@ export function ensurePluginManifest(workspaceSlug: string, workspaceName: strin
 
 // ===== MCP 配置管理 =====
 
+/**
+ * 剔除与内置 MCP 保留名冲突的 server。
+ *
+ * 内置 MCP（kind=internal，由代码注入）的保留名不允许出现在工作区 mcp.json。
+ * 任何同名条目都是误写或冲突——剔除它，既防止用户/UI 占用保留名，也让手改
+ * mcp.json 写入的冲突项在下次读写时自愈。内置 MCP 的开关由内置机制管理，不在此文件。
+ */
+function stripReservedBuiltinServers(servers: WorkspaceMcpConfig['servers']): WorkspaceMcpConfig['servers'] {
+  const result: WorkspaceMcpConfig['servers'] = {}
+  for (const [name, entry] of Object.entries(servers ?? {})) {
+    if (RESERVED_BUILTIN_KEYS.has(name)) {
+      console.warn(`[Agent 工作区] MCP 服务器 "${name}" 与内置 MCP 保留名冲突，已忽略（内置 MCP 不写入 mcp.json）`)
+      continue
+    }
+    result[name] = entry
+  }
+  return result
+}
+
 export function getWorkspaceMcpConfig(workspaceSlug: string): WorkspaceMcpConfig {
   const mcpPath = getWorkspaceMcpPath(workspaceSlug)
 
@@ -452,7 +472,7 @@ export function getWorkspaceMcpConfig(workspaceSlug: string): WorkspaceMcpConfig
   try {
     const raw = readFileSync(mcpPath, 'utf-8')
     const parsed = JSON.parse(raw) as Partial<WorkspaceMcpConfig>
-    return { servers: parsed.servers ?? {} }
+    return { servers: stripReservedBuiltinServers(parsed.servers ?? {}) }
   } catch (error) {
     console.error('[Agent 工作区] 读取 MCP 配置失败:', error)
     return { servers: {} }
@@ -463,7 +483,8 @@ export function saveWorkspaceMcpConfig(workspaceSlug: string, config: WorkspaceM
   const mcpPath = getWorkspaceMcpPath(workspaceSlug)
 
   try {
-    writeFileSync(mcpPath, JSON.stringify(config, null, 2), 'utf-8')
+    const safeConfig: WorkspaceMcpConfig = { servers: stripReservedBuiltinServers(config.servers ?? {}) }
+    writeFileSync(mcpPath, JSON.stringify(safeConfig, null, 2), 'utf-8')
     console.log(`[Agent 工作区] 已保存 MCP 配置: ${workspaceSlug}`)
   } catch (error) {
     console.error('[Agent 工作区] 保存 MCP 配置失败:', error)
