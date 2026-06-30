@@ -703,6 +703,31 @@ export interface McpServerEntry {
   }
 }
 
+/** MCP 工具摘要，用于前端只读展示 */
+export interface McpToolSummary {
+  name: string
+  description: string
+  readOnly?: boolean
+}
+
+/** Proma 内置 MCP 分类 */
+export type BuiltinMcpCategory = 'system' | 'automation' | 'collaboration' | 'memory' | 'media'
+
+/** Proma 内置 MCP 摘要，不写入工作区 mcp.json */
+export interface BuiltinMcpServerSummary {
+  id: string
+  name: string
+  displayName: string
+  description: string
+  category: BuiltinMcpCategory
+  enabled: boolean
+  available: boolean
+  availabilityReason?: string
+  tools: McpToolSummary[]
+  /** 是否允许用户开关。基础设施型 MCP（如 proma-cloud）始终注入、不提供开关，置 false */
+  toggleable?: boolean
+}
+
 /** 工作区 MCP 配置文件 */
 export interface WorkspaceMcpConfig {
   servers: Record<string, McpServerEntry>
