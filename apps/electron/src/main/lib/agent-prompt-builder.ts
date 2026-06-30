@@ -408,6 +408,11 @@ interface DynamicContext {
   workspaceName?: string
   workspaceSlug?: string
   agentCwd?: string
+  /**
+   * 本次会话实际注入的内置 MCP server 真实名（mcpServers 的 key，已是下划线安全名）。
+   * 用于在动态上下文中按真实名枚举，杜绝模型凭配置名手写错误的工具名。
+   */
+  builtinMcpServerNames?: string[]
 }
 
 /**
@@ -451,6 +456,15 @@ export function buildDynamicContext(ctx: DynamicContext): string {
           ? `${entry.command}${entry.args?.length ? ' ' + entry.args.join(' ') : ''}`
           : entry.url || ''
         wsLines.push(`- ${name} (${entry.type}, ${status}): ${detail}`)
+      }
+    }
+
+    // 本次会话实际注入的内置 MCP 工具（按真实 server 名枚举，杜绝模型手写错误名）
+    const builtinNames = ctx.builtinMcpServerNames ?? []
+    if (builtinNames.length > 0) {
+      wsLines.push('内置 MCP 工具（本次会话可用，调用时照抄以下真实名）:')
+      for (const name of builtinNames) {
+        wsLines.push(`- mcp__${name}__*`)
       }
     }
 
