@@ -1,12 +1,13 @@
 import * as React from 'react'
 import { useSetAtom } from 'jotai'
 import { toast } from 'sonner'
-import { BookOpen, Brain, ChevronDown, ChevronRight, Code2, Eye, FileText, FolderOpen, RefreshCw, Save, Sparkles } from 'lucide-react'
+import { BookOpen, Brain, ChevronDown, ChevronRight, Code2, Eye, FileText, FolderOpen, Loader2, RefreshCw, Save, Sparkles } from 'lucide-react'
 import type { SkillFileNode, WorkspaceMemorySummary } from '@proma/shared'
 import { Button } from '@/components/ui/button'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { SettingsCard } from '@/components/settings/primitives'
 import { DefaultAppOpenButton } from '@/components/diff/DefaultAppOpenButton'
+import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip'
 import { MessageResponse } from '@/components/ai-elements/message'
 import { agentPendingPromptAtom } from '@/atoms/agent-atoms'
 import { useCreateSession } from '@/hooks/useCreateSession'
@@ -141,9 +142,6 @@ export function WorkspaceMemoryTab({ workspaceSlug, search }: WorkspaceMemoryTab
   const [viewMode, setViewMode] = React.useState<'preview' | 'edit'>('preview')
   const [initializing, setInitializing] = React.useState(false)
   const [historyRange, setHistoryRange] = React.useState<MemoryHistoryRange>('1m')
-  const [lastSavedAt, setLastSavedAt] = React.useState<number | null>(null)
-
-  const dirty = selected !== null && isDirty
 
   // 自动保存：用 ref 持有最新的编辑状态，供防抖定时器与"切换文件前 flush"复用，
   // 避免把 selected/editText 塞进一堆回调的依赖数组里。
@@ -187,7 +185,6 @@ export function WorkspaceMemoryTab({ workspaceSlug, search }: WorkspaceMemoryTab
     setSelected((prev) => (prev && prev.kind === target.kind && prev.relativePath === target.relativePath
       ? { ...prev, absolutePath: nextAbsolute }
       : prev))
-    setLastSavedAt(Date.now())
   }, [workspaceSlug, refreshSummaryAndTree])
 
   /** 在切换文件/刷新/卸载前，把待保存的脏内容立即刷盘（静默，失败才提示） */
@@ -550,14 +547,16 @@ export function WorkspaceMemoryTab({ workspaceSlug, search }: WorkspaceMemoryTab
                   </Button>
                 )}
                 {selected && (
-                  <span className="whitespace-nowrap text-[11px] text-muted-foreground/80">
-                    {saving ? '自动保存中…' : dirty ? '有未保存改动' : lastSavedAt ? '已自动保存' : '自动保存已开启'}
-                  </span>
+                  <Tooltip>
+                    <TooltipTrigger asChild>
+                      <Button size="sm" onClick={handleSave} disabled={!selected || saving || loadingFile}>
+                        {saving ? <Loader2 size={14} className="mr-1.5 animate-spin" /> : <Save size={14} className="mr-1.5" />}
+                        {saving ? '保存中...' : '保存'}
+                      </Button>
+                    </TooltipTrigger>
+                    <TooltipContent side="bottom">编辑后会自动保存，也可点此立即保存</TooltipContent>
+                  </Tooltip>
                 )}
-                <Button size="sm" onClick={handleSave} disabled={!selected || saving || loadingFile || !dirty}>
-                  <Save size={14} className="mr-1.5" />
-                  {saving ? '保存中...' : '保存'}
-                </Button>
               </div>
             </div>
             {loadingFile ? (
