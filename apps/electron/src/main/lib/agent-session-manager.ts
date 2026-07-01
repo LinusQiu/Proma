@@ -58,6 +58,22 @@ interface AgentSessionsIndex {
 const INDEX_VERSION = 1
 
 /**
+ * 安全解析 JSONL 行数组，逐行 try-catch。
+ * 单行损坏时跳过该行并记录 warning，不会导致全量数据丢失。
+ */
+function safeParseJsonl<T>(lines: string[], context: string): T[] {
+  const results: T[] = []
+  for (let i = 0; i < lines.length; i++) {
+    try {
+      results.push(JSON.parse(lines[i]!) as T)
+    } catch (err) {
+      console.warn(`[Agent 会话] ${context} — JSONL 第 ${i + 1} 行解析失败，已跳过:`, (err as Error).message)
+    }
+  }
+  return results
+}
+
+/**
  * 读取会话索引文件
  */
 function readIndex(): AgentSessionsIndex {
@@ -175,7 +191,7 @@ export function getAgentSessionMessages(id: string): AgentMessage[] {
   try {
     const raw = readFileSync(filePath, 'utf-8')
     const lines = raw.split('\n').filter((line) => line.trim())
-    return lines.map((line) => JSON.parse(line) as AgentMessage)
+    return safeParseJsonl<AgentMessage>(lines, `读取会话消息 (${id})`)
   } catch (error) {
     console.error(`[Agent 会话] 读取消息失败 (${id}):`, error)
     return []
@@ -1041,7 +1057,7 @@ export function resolveUserUuidFromSDK(
   // 读取并解析 SDK JSONL
   try {
     const lines = readFileSync(sessionFilePath, 'utf-8').split('\n').filter(Boolean)
-    const messages = lines.map((l) => JSON.parse(l) as Record<string, unknown>)
+    const messages = safeParseJsonl<Record<string, unknown>>(lines, `rewind 解析 SDK JSONL (${usingSourceSession ? '源会话' : '当前会话'})`)
 
     // 找到 assistant message 的位置
     const assistantIdx = messages.findIndex((m) => m.uuid === assistantMessageUuid)
@@ -1146,7 +1162,7 @@ export function rewindFilesFromSnapshot(
     let messages: Record<string, unknown>[] = []
     if (sessionFilePath) {
       const lines = readFileSync(sessionFilePath, 'utf-8').split('\n').filter(Boolean)
-      messages = lines.map((l) => JSON.parse(l) as Record<string, unknown>)
+      messages = safeParseJsonl<Record<string, unknown>>(lines, 'rewindFilesFromSnapshot 解析当前 JSONL')
     }
 
     // 找到目标 user message 的位置
@@ -1161,7 +1177,7 @@ export function rewindFilesFromSnapshot(
         return { canRewind: false, error: '未找到源会话 SDK session JSONL（fork 回退需要源会话数据）' }
       }
       const sourceLines = readFileSync(sourceFilePath, 'utf-8').split('\n').filter(Boolean)
-      messages = sourceLines.map((l) => JSON.parse(l) as Record<string, unknown>)
+      messages = safeParseJsonl<Record<string, unknown>>(sourceLines, 'rewindFilesFromSnapshot 解析源会话 JSONL')
       targetIdx = messages.findIndex((m) => m.uuid === userMessageUuid)
       effectiveSdkSessionId = forkSourceSdkSessionId
       isForkFallback = true
