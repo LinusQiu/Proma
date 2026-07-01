@@ -552,6 +552,15 @@ export function getWeChatSyncPath(): string {
 }
 
 /**
+ * 获取微信聊天绑定持久化路径
+ *
+ * @returns ~/.proma/wechat-bindings.json
+ */
+export function getWeChatBindingsPath(): string {
+  return join(getConfigDir(), 'wechat-bindings.json')
+}
+
+/**
  * 获取钉钉配置文件路径
  *
  * @returns ~/.proma/dingtalk.json
