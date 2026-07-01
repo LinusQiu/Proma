@@ -187,8 +187,13 @@ export function WorkspaceMemoryTab({ workspaceSlug, search }: WorkspaceMemoryTab
       : prev))
   }, [workspaceSlug, refreshSummaryAndTree])
 
-  /** 在切换文件/刷新/卸载前，把待保存的脏内容立即刷盘（静默，失败才提示） */
-  const flushPendingSave = React.useCallback(async (): Promise<void> => {
+  /**
+   * 把待保存的脏内容立即刷盘（静默，失败才提示）。
+   * showSaving=true 时（防抖自动保存路径）在保存按钮上展示 loading 动画并保证最短可见时长；
+   * 切换文件/刷新/卸载前的 flush 传 false，保持即时不拖慢手感。
+   */
+  const flushPendingSave = React.useCallback(async (opts?: { showSaving?: boolean }): Promise<void> => {
+    const showSaving = opts?.showSaving ?? false
     if (autoSaveTimerRef.current) {
       clearTimeout(autoSaveTimerRef.current)
       autoSaveTimerRef.current = null
@@ -199,6 +204,9 @@ export function WorkspaceMemoryTab({ workspaceSlug, search }: WorkspaceMemoryTab
     const { selected: curSelected, editText: curText, isDirty: curDirty } = saveStateRef.current
     if (!curSelected || !curDirty) return
     setIsDirty(false)
+    if (showSaving) setSaving(true)
+    // 写入通常很快，saving 一闪而过看不到动画；自动保存时保证"保存中"至少显示一小段时间
+    const startedAt = performance.now()
     try {
       const p = persistTarget(curSelected, curText)
       persistInFlightRef.current = p
@@ -209,6 +217,14 @@ export function WorkspaceMemoryTab({ workspaceSlug, search }: WorkspaceMemoryTab
       setIsDirty(true)
     } finally {
       persistInFlightRef.current = null
+      if (showSaving) {
+        const elapsed = performance.now() - startedAt
+        const MIN_SAVING_MS = 450
+        if (elapsed < MIN_SAVING_MS) {
+          await new Promise((r) => setTimeout(r, MIN_SAVING_MS - elapsed))
+        }
+        setSaving(false)
+      }
     }
   }, [persistTarget])
 
@@ -309,12 +325,12 @@ export function WorkspaceMemoryTab({ workspaceSlug, search }: WorkspaceMemoryTab
     return () => { cancelled = true }
   }, [workspaceSlug])
 
-  // 防抖自动保存：编辑内容变脏后 800ms 内无新输入则静默保存
+  // 防抖自动保存：编辑内容变脏后 800ms 内无新输入则自动保存（按钮显示 loading 动画）
   React.useEffect(() => {
     if (!selected || !isDirty || loadingFile) return
     if (autoSaveTimerRef.current) clearTimeout(autoSaveTimerRef.current)
     autoSaveTimerRef.current = setTimeout(() => {
-      void flushPendingSave()
+      void flushPendingSave({ showSaving: true })
     }, 800)
     return () => {
       if (autoSaveTimerRef.current) {
