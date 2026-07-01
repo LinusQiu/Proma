@@ -561,6 +561,15 @@ export function getDingTalkConfigPath(): string {
 }
 
 /**
+ * 获取某个钉钉 Bot 的聊天绑定持久化路径
+ *
+ * @returns ~/.proma/dingtalk-bindings-{botId}.json
+ */
+export function getDingTalkBotBindingsPath(botId: string): string {
+  return join(getConfigDir(), `dingtalk-bindings-${botId}.json`)
+}
+
+/**
  * 获取飞书配置文件路径
  *
  * @returns ~/.proma/feishu.json
