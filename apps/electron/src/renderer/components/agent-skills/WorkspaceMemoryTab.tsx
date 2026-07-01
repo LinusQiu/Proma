@@ -1,0 +1,631 @@
+import * as React from 'react'
+import { useSetAtom } from 'jotai'
+import { toast } from 'sonner'
+import { BookOpen, Brain, ChevronDown, ChevronRight, Code2, Eye, FileText, FolderOpen, RefreshCw, Save, Sparkles } from 'lucide-react'
+import type { SkillFileNode, WorkspaceMemorySummary } from '@proma/shared'
+import { Button } from '@/components/ui/button'
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
+import { SettingsCard } from '@/components/settings/primitives'
+import { DefaultAppOpenButton } from '@/components/diff/DefaultAppOpenButton'
+import { MessageResponse } from '@/components/ai-elements/message'
+import { agentPendingPromptAtom } from '@/atoms/agent-atoms'
+import { useCreateSession } from '@/hooks/useCreateSession'
+import { cn } from '@/lib/utils'
+
+type SelectedMemoryFile =
+  | { kind: 'claude'; relativePath: 'CLAUDE.md'; title: string; absolutePath: string }
+  | { kind: 'auto'; relativePath: string; title: string; absolutePath: string }
+
+interface WorkspaceMemoryTabProps {
+  workspaceSlug: string
+  search: string
+}
+
+const AUTO_MEMORY_INDEX = 'MEMORY.md'
+
+type MemoryHistoryRange = '1m' | '2m' | '3m' | 'all'
+
+const MEMORY_HISTORY_RANGE_OPTIONS: Array<{ value: MemoryHistoryRange; label: string; promptLabel: string }> = [
+  { value: '1m', label: '近 1 个月', promptLabel: '最近 1 个月内' },
+  { value: '2m', label: '近 2 个月', promptLabel: '最近 2 个月内' },
+  { value: '3m', label: '近 3 个月', promptLabel: '最近 3 个月内' },
+  { value: 'all', label: '全部', promptLabel: '全部可用历史' },
+]
+
+function getMemoryHistoryRangeLabel(value: MemoryHistoryRange): string {
+  return MEMORY_HISTORY_RANGE_OPTIONS.find((option) => option.value === value)?.promptLabel ?? '最近 1 个月内'
+}
+
+function buildWorkspaceMemoryInitPrompt(historyRange: MemoryHistoryRange): string {
+  const rangeLabel = getMemoryHistoryRangeLabel(historyRange)
+  const rangeGuidance = historyRange === 'all'
+    ? '这次处理全部可用历史；如果历史很多，请优先最新、最有代表性和用户实际完成工作的会话，避免把临时过程写入长期记忆。'
+    : `如果你认为需要覆盖超过${rangeLabel.replace('最近', '')}的历史，请先在最终回复里建议用户扩大范围；这次默认只处理${rangeLabel}。`
+
+  return `请帮我初始化并沉淀当前工作区的长期记忆。
+
+目标：
+1. 读取当前工作区${rangeLabel}的 Agent 工作会话，优先关注最新、最有代表性、用户实际完成工作的会话。如果证据不足，请说明而不是编造。
+2. 从这些会话中提炼工作区级别的稳定知识，包括项目结构、常用命令、架构约定、用户偏好、踩坑经验、重要决策和未来 Agent 必须知道的注意事项。
+3. 更新工作区根目录的 CLAUDE.md：只写稳定、跨会话有价值的项目指令和工作方式，避免写临时过程和聊天流水账。
+4. 更新工作区 .claude/memory/MEMORY.md，必要时创建主题文件：用它记录 SDK auto memory 应该长期回忆的经验、索引和主题路由。
+5. ${rangeGuidance}
+
+要求：
+- 先查看当前工作区可用的会话和文件，再决定如何写。
+- 写入内容要简洁、可维护、方便用户审阅。
+- 不要删除用户已有的有效内容；发现过时内容时先保守修订或标注。
+- 完成后回复：读取了哪些范围、更新了哪些文件、沉淀了哪些关键主题、还有哪些建议用户确认的点。`
+}
+
+function formatBytes(bytes: number): string {
+  if (bytes < 1024) return `${bytes} B`
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`
+  return `${(bytes / 1024 / 1024).toFixed(1)} MB`
+}
+
+function formatTime(ts?: number): string {
+  if (!ts) return '尚未创建'
+  return new Date(ts).toLocaleString('zh-CN', {
+    month: '2-digit',
+    day: '2-digit',
+    hour: '2-digit',
+    minute: '2-digit',
+  })
+}
+
+function autoMemoryPath(summary: WorkspaceMemorySummary, relativePath: string): string {
+  return `${summary.autoMemory.directory}/${relativePath}`
+}
+
+function filterNodes(nodes: SkillFileNode[], query: string): SkillFileNode[] {
+  const q = query.trim().toLowerCase()
+  if (!q) return nodes
+  const result: SkillFileNode[] = []
+  for (const node of nodes) {
+    const children = node.children ? filterNodes(node.children, query) : undefined
+    const selfMatch =
+      node.name.toLowerCase().includes(q) ||
+      node.relativePath.toLowerCase().includes(q)
+    if (selfMatch || (children && children.length > 0)) {
+      result.push({ ...node, children })
+    }
+  }
+  return result
+}
+
+function withVirtualMemoryIndex(nodes: SkillFileNode[]): SkillFileNode[] {
+  if (nodes.some((node) => node.relativePath === AUTO_MEMORY_INDEX)) return nodes
+  return [
+    {
+      relativePath: AUTO_MEMORY_INDEX,
+      name: AUTO_MEMORY_INDEX,
+      type: 'file',
+      size: 0,
+      isText: true,
+    },
+    ...nodes,
+  ]
+}
+
+export function WorkspaceMemoryTab({ workspaceSlug, search }: WorkspaceMemoryTabProps): React.ReactElement {
+  const { createAgent } = useCreateSession()
+  const setPendingPrompt = useSetAtom(agentPendingPromptAtom)
+  const [summary, setSummary] = React.useState<WorkspaceMemorySummary | null>(null)
+  const [autoFiles, setAutoFiles] = React.useState<SkillFileNode[]>([])
+  const [selected, setSelected] = React.useState<SelectedMemoryFile | null>(null)
+  const [editText, setEditText] = React.useState('')
+  const [loading, setLoading] = React.useState(true)
+  const [loadingFile, setLoadingFile] = React.useState(false)
+  const [saving, setSaving] = React.useState(false)
+  const [expanded, setExpanded] = React.useState<Set<string>>(new Set())
+  const [isDirty, setIsDirty] = React.useState(false)
+  const [viewMode, setViewMode] = React.useState<'preview' | 'edit'>('preview')
+  const [initializing, setInitializing] = React.useState(false)
+  const [historyRange, setHistoryRange] = React.useState<MemoryHistoryRange>('1m')
+
+  const dirty = selected !== null && isDirty
+  const historyRangeLabel = React.useMemo(
+    () => MEMORY_HISTORY_RANGE_OPTIONS.find((option) => option.value === historyRange)?.label ?? '近 1 个月',
+    [historyRange],
+  )
+
+  const refreshSummaryAndTree = React.useCallback(async (): Promise<WorkspaceMemorySummary> => {
+    const [nextSummary, files] = await Promise.all([
+      window.electronAPI.getWorkspaceMemorySummary(workspaceSlug),
+      window.electronAPI.listWorkspaceAutoMemoryFiles(workspaceSlug),
+    ])
+    setSummary(nextSummary)
+    setAutoFiles(files)
+    return nextSummary
+  }, [workspaceSlug])
+
+  const openClaude = React.useCallback(async (knownSummary?: WorkspaceMemorySummary): Promise<void> => {
+    setLoadingFile(true)
+    try {
+      const currentSummary = knownSummary ?? summary ?? await window.electronAPI.getWorkspaceMemorySummary(workspaceSlug)
+      const file = await window.electronAPI.readWorkspaceClaudeMd(workspaceSlug)
+      setSelected({
+        kind: 'claude',
+        relativePath: 'CLAUDE.md',
+        title: 'CLAUDE.md',
+        absolutePath: currentSummary.claudeMd.path,
+      })
+      setEditText(file.content ?? '')
+      setIsDirty(false)
+    } catch (err) {
+      console.error('[工作区记忆] 读取 CLAUDE.md 失败:', err)
+      toast.error(err instanceof Error ? err.message : '读取 CLAUDE.md 失败')
+    } finally {
+      setLoadingFile(false)
+    }
+  }, [summary, workspaceSlug])
+
+  const openAutoFile = React.useCallback(async (relativePath: string, knownSummary?: WorkspaceMemorySummary): Promise<void> => {
+    setLoadingFile(true)
+    try {
+      const currentSummary = knownSummary ?? summary ?? await window.electronAPI.getWorkspaceMemorySummary(workspaceSlug)
+      const file = await window.electronAPI.readWorkspaceAutoMemoryFile(workspaceSlug, relativePath)
+      setSelected({
+        kind: 'auto',
+        relativePath: file.relativePath,
+        title: file.relativePath,
+        absolutePath: autoMemoryPath(currentSummary, file.relativePath),
+      })
+      setEditText(file.content ?? '')
+      setIsDirty(false)
+    } catch (err) {
+      console.error('[工作区记忆] 读取 auto memory 文件失败:', err)
+      toast.error(err instanceof Error ? err.message : '读取 auto memory 文件失败')
+    } finally {
+      setLoadingFile(false)
+    }
+  }, [summary, workspaceSlug])
+
+  const refresh = React.useCallback(async (): Promise<void> => {
+    setLoading(true)
+    try {
+      const nextSummary = await refreshSummaryAndTree()
+      if (selected?.kind === 'auto') {
+        await openAutoFile(selected.relativePath, nextSummary)
+      } else {
+        await openClaude(nextSummary)
+      }
+    } catch (err) {
+      console.error('[工作区记忆] 刷新失败:', err)
+      toast.error('刷新工作区记忆失败')
+    } finally {
+      setLoading(false)
+    }
+  }, [openAutoFile, openClaude, refreshSummaryAndTree, selected])
+
+  React.useEffect(() => {
+    let cancelled = false
+    setSelected(null)
+    setEditText('')
+    setIsDirty(false)
+    setExpanded(new Set())
+    setLoading(true)
+    void (async () => {
+      try {
+        const [nextSummary, files, claudeFile] = await Promise.all([
+          window.electronAPI.getWorkspaceMemorySummary(workspaceSlug),
+          window.electronAPI.listWorkspaceAutoMemoryFiles(workspaceSlug),
+          window.electronAPI.readWorkspaceClaudeMd(workspaceSlug),
+        ])
+        if (cancelled) return
+        setSummary(nextSummary)
+        setAutoFiles(files)
+        setSelected({
+          kind: 'claude',
+          relativePath: 'CLAUDE.md',
+          title: 'CLAUDE.md',
+          absolutePath: nextSummary.claudeMd.path,
+        })
+        setEditText(claudeFile.content ?? '')
+        setIsDirty(false)
+      } catch (err) {
+        console.error('[工作区记忆] 加载失败:', err)
+        toast.error('加载工作区记忆失败')
+      } finally {
+        if (!cancelled) setLoading(false)
+      }
+    })()
+    return () => { cancelled = true }
+  }, [workspaceSlug])
+
+  const handleSave = async (): Promise<void> => {
+    if (!selected) return
+    setSaving(true)
+    try {
+      if (selected.kind === 'claude') {
+        await window.electronAPI.writeWorkspaceClaudeMd(workspaceSlug, editText)
+      } else {
+        await window.electronAPI.writeWorkspaceAutoMemoryFile(workspaceSlug, selected.relativePath, editText)
+      }
+      setIsDirty(false)
+      const nextSummary = await refreshSummaryAndTree()
+      if (selected.kind === 'claude') {
+        setSelected({ ...selected, absolutePath: nextSummary.claudeMd.path })
+      } else {
+        setSelected({ ...selected, absolutePath: autoMemoryPath(nextSummary, selected.relativePath) })
+      }
+      toast.success('记忆文件已保存')
+    } catch (err) {
+      console.error('[工作区记忆] 保存失败:', err)
+      toast.error(err instanceof Error ? err.message : '保存失败')
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  const handleInitializeMemory = async (): Promise<void> => {
+    if (initializing) return
+    setInitializing(true)
+    try {
+      const sessionId = await createAgent()
+      if (!sessionId) {
+        toast.error('创建 Agent 会话失败')
+        return
+      }
+      setPendingPrompt({
+        sessionId,
+        message: buildWorkspaceMemoryInitPrompt(historyRange),
+      })
+      toast.success('已创建工作区记忆初始化会话')
+    } catch (err) {
+      console.error('[工作区记忆] 创建初始化会话失败:', err)
+      toast.error(err instanceof Error ? err.message : '创建初始化会话失败')
+    } finally {
+      setInitializing(false)
+    }
+  }
+
+  const visibleAutoFiles = React.useMemo(
+    () => filterNodes(withVirtualMemoryIndex(autoFiles), search),
+    [autoFiles, search],
+  )
+
+  if (loading || !summary) {
+    return <div className="py-20 text-center text-sm text-muted-foreground">加载工作区记忆中...</div>
+  }
+
+  return (
+    <div className="flex flex-col gap-5">
+      <div className="grid gap-3 lg:grid-cols-2">
+        <MemoryStatCard
+          icon={<BookOpen size={18} />}
+          title="项目指令"
+          subtitle="工作区根目录 CLAUDE.md"
+          value={summary.claudeMd.exists ? formatBytes(summary.claudeMd.size) : '尚未创建'}
+          detail={`更新于 ${formatTime(summary.claudeMd.updatedAt)}`}
+          active={selected?.kind === 'claude'}
+          onClick={() => void openClaude(summary)}
+        />
+        <MemoryStatCard
+          icon={<Brain size={18} />}
+          title="自动记忆"
+          subtitle=".claude/memory/MEMORY.md 与主题文件"
+          value={`${summary.autoMemory.fileCount} 个文件`}
+          detail={`${formatBytes(summary.autoMemory.totalSize)} · 更新于 ${formatTime(summary.autoMemory.updatedAt)}`}
+          active={selected?.kind === 'auto'}
+          onClick={() => void openAutoFile(AUTO_MEMORY_INDEX, summary)}
+        />
+      </div>
+
+      <SettingsCard divided={false}>
+        <div className="flex flex-col gap-3 p-4 sm:flex-row sm:items-center sm:justify-between">
+          <div className="min-w-0">
+            <div className="text-sm font-medium text-foreground">从历史会话生成工作区记忆</div>
+            <div className="mt-1 text-xs leading-relaxed text-muted-foreground">
+              新建一个 Agent 会话，读取当前工作区{historyRangeLabel}的工作会话，沉淀并更新 CLAUDE.md 与 auto memory 文件。
+            </div>
+          </div>
+          <div className="flex shrink-0 items-center gap-2">
+            <Select
+              value={historyRange}
+              onValueChange={(value) => setHistoryRange(value as MemoryHistoryRange)}
+              disabled={initializing}
+            >
+              <SelectTrigger className="h-9 w-[116px] text-xs">
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                {MEMORY_HISTORY_RANGE_OPTIONS.map((option) => (
+                  <SelectItem key={option.value} value={option.value}>
+                    {option.label}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+            <Button onClick={handleInitializeMemory} disabled={initializing}>
+              <Sparkles size={14} className="mr-1.5" />
+              {initializing ? '创建中...' : '生成工作区记忆'}
+            </Button>
+          </div>
+        </div>
+      </SettingsCard>
+
+      <div className="grid min-h-[520px] gap-4 lg:grid-cols-[280px_minmax(0,1fr)]">
+        <SettingsCard divided={false} className="min-h-0 overflow-hidden">
+          <div className="flex h-full min-h-0 flex-col">
+            <div className="flex items-center justify-between border-b border-border/50 px-3 py-2">
+              <div className="text-[13px] font-medium text-foreground/75">记忆文件</div>
+              <button
+                type="button"
+                title="刷新"
+                onClick={() => void refresh()}
+                className="rounded p-1 text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
+              >
+                <RefreshCw size={14} />
+              </button>
+            </div>
+            <div className="min-h-0 flex-1 overflow-y-auto p-2">
+              <FileButton
+                active={selected?.kind === 'claude'}
+                icon={<FileText size={14} />}
+                label="CLAUDE.md"
+                meta="工作区项目指令"
+                onClick={() => void openClaude(summary)}
+              />
+              <div className="mt-3 px-2 pb-1 text-[11px] font-medium uppercase tracking-wide text-muted-foreground/70">
+                Auto Memory
+              </div>
+              <div className="space-y-0.5">
+                {visibleAutoFiles.length === 0 ? (
+                  <div className="px-2 py-6 text-center text-xs text-muted-foreground">没有匹配的记忆文件</div>
+                ) : (
+                  visibleAutoFiles.map((node) => (
+                    <MemoryTreeNode
+                      key={node.relativePath}
+                      node={node}
+                      level={0}
+                      selectedPath={selected?.kind === 'auto' ? selected.relativePath : null}
+                      expanded={expanded}
+                      onToggle={(path) => {
+                        setExpanded((prev) => {
+                          const next = new Set(prev)
+                          if (next.has(path)) next.delete(path)
+                          else next.add(path)
+                          return next
+                        })
+                      }}
+                      onOpen={(path) => void openAutoFile(path, summary)}
+                    />
+                  ))
+                )}
+              </div>
+            </div>
+          </div>
+        </SettingsCard>
+
+        <SettingsCard divided={false} className="min-h-0 overflow-hidden">
+          <div className="flex h-full min-h-0 flex-col">
+            <div className="flex shrink-0 items-center justify-between gap-3 border-b border-border/50 px-4 py-3">
+              <div className="min-w-0">
+                <div className="truncate text-sm font-medium text-foreground">
+                  {selected?.title ?? '未选择文件'}
+                </div>
+                <div className="mt-0.5 truncate font-mono text-[11px] text-muted-foreground">
+                  {selected?.absolutePath ?? '从左侧选择一个记忆文件'}
+                </div>
+              </div>
+              <div className="flex shrink-0 items-center gap-2">
+                {selected && (
+                  <div className="flex items-center gap-1 rounded-lg bg-muted p-0.5">
+                    <button
+                      type="button"
+                      onClick={() => setViewMode('preview')}
+                      className={cn(
+                        'flex h-7 items-center gap-1 rounded-md px-2 text-xs font-medium transition-colors',
+                        viewMode === 'preview' ? 'bg-background text-foreground shadow-sm' : 'text-muted-foreground hover:text-foreground',
+                      )}
+                    >
+                      <Eye size={13} />
+                      预览
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setViewMode('edit')}
+                      className={cn(
+                        'flex h-7 items-center gap-1 rounded-md px-2 text-xs font-medium transition-colors',
+                        viewMode === 'edit' ? 'bg-background text-foreground shadow-sm' : 'text-muted-foreground hover:text-foreground',
+                      )}
+                    >
+                      <Code2 size={13} />
+                      编辑
+                    </button>
+                  </div>
+                )}
+                {selected && (
+                  <DefaultAppOpenButton
+                    filePath={selected.absolutePath}
+                    variant="labeled"
+                    className="h-8 max-w-[170px] border border-border/60 bg-background px-2 shadow-sm"
+                  />
+                )}
+                {selected && (
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    onClick={() => window.electronAPI.showItemInFolder(selected.absolutePath)}
+                  >
+                    <FolderOpen size={14} className="mr-1.5" />
+                    打开文件夹
+                  </Button>
+                )}
+                <Button size="sm" onClick={handleSave} disabled={!selected || saving || loadingFile || !dirty}>
+                  <Save size={14} className="mr-1.5" />
+                  {saving ? '保存中...' : '保存'}
+                </Button>
+              </div>
+            </div>
+            {loadingFile ? (
+              <div className="flex flex-1 items-center justify-center text-sm text-muted-foreground">读取文件中...</div>
+            ) : selected && viewMode === 'edit' ? (
+              <textarea
+                value={editText}
+                onChange={(event) => {
+                  setIsDirty(true)
+                  setEditText(event.target.value)
+                }}
+                spellCheck={false}
+                className="min-h-0 flex-1 resize-none bg-transparent p-4 font-mono text-[13px] leading-6 text-foreground outline-none placeholder:text-muted-foreground"
+                placeholder={selected.kind === 'claude'
+                  ? '# 项目指令\n\n写下未来 Agent 必须知道的项目规范、命令和决策。'
+                  : '# MEMORY\n\n写下稳定、可复用的自动记忆索引。'}
+              />
+            ) : selected ? (
+              <div className="min-h-0 flex-1 overflow-y-auto p-5">
+                {editText.trim() ? (
+                  <MessageResponse
+                    className="text-[14px] prose-headings:scroll-mt-4"
+                    basePath={selected.absolutePath.split('/').slice(0, -1).join('/')}
+                  >
+                    {editText}
+                  </MessageResponse>
+                ) : (
+                  <div className="flex h-full min-h-[240px] items-center justify-center rounded-lg border border-dashed border-border/70 text-sm text-muted-foreground">
+                    当前文件为空，切换到编辑后可以写入 Markdown 内容。
+                  </div>
+                )}
+              </div>
+            ) : (
+              <div className="flex flex-1 items-center justify-center text-sm text-muted-foreground">从左侧选择一个记忆文件</div>
+            )}
+          </div>
+        </SettingsCard>
+      </div>
+    </div>
+  )
+}
+
+function MemoryStatCard({
+  icon,
+  title,
+  subtitle,
+  value,
+  detail,
+  active,
+  onClick,
+}: {
+  icon: React.ReactNode
+  title: string
+  subtitle: string
+  value: string
+  detail: string
+  active: boolean
+  onClick: () => void
+}): React.ReactElement {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      className={cn(
+        'flex items-center gap-3 rounded-lg border bg-content-area p-4 text-left shadow-sm transition-colors',
+        active ? 'border-primary/50 bg-primary/[0.04]' : 'border-border/60 hover:bg-foreground/[0.03]',
+      )}
+    >
+      <div className="flex size-10 shrink-0 items-center justify-center rounded-lg bg-primary/10 text-primary">
+        {icon}
+      </div>
+      <div className="min-w-0 flex-1">
+        <div className="flex items-center justify-between gap-2">
+          <div className="text-sm font-medium text-foreground">{title}</div>
+          <div className="text-xs font-medium tabular-nums text-foreground/65">{value}</div>
+        </div>
+        <div className="mt-0.5 truncate text-xs text-muted-foreground">{subtitle}</div>
+        <div className="mt-1 text-[11px] text-muted-foreground/80">{detail}</div>
+      </div>
+    </button>
+  )
+}
+
+function FileButton({
+  active,
+  icon,
+  label,
+  meta,
+  onClick,
+}: {
+  active: boolean
+  icon: React.ReactNode
+  label: string
+  meta?: string
+  onClick: () => void
+}): React.ReactElement {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      className={cn(
+        'flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left text-[13px] transition-colors',
+        active ? 'bg-accent text-accent-foreground' : 'text-foreground/80 hover:bg-accent/60',
+      )}
+    >
+      <span className="shrink-0 text-muted-foreground">{icon}</span>
+      <span className="min-w-0 flex-1 truncate">{label}</span>
+      {meta && <span className="truncate text-[11px] text-muted-foreground">{meta}</span>}
+    </button>
+  )
+}
+
+function MemoryTreeNode({
+  node,
+  level,
+  selectedPath,
+  expanded,
+  onToggle,
+  onOpen,
+}: {
+  node: SkillFileNode
+  level: number
+  selectedPath: string | null
+  expanded: Set<string>
+  onToggle: (path: string) => void
+  onOpen: (path: string) => void
+}): React.ReactElement {
+  const isDirectory = node.type === 'directory'
+  const isExpanded = expanded.has(node.relativePath)
+  const isActive = selectedPath === node.relativePath
+  const paddingLeft = 8 + level * 14
+
+  return (
+    <div>
+      <button
+        type="button"
+        onClick={() => isDirectory ? onToggle(node.relativePath) : onOpen(node.relativePath)}
+        className={cn(
+          'flex w-full items-center gap-1.5 rounded-md py-1.5 pr-2 text-left text-[13px] transition-colors',
+          isActive ? 'bg-accent text-accent-foreground' : 'text-foreground/80 hover:bg-accent/60',
+        )}
+        style={{ paddingLeft }}
+      >
+        {isDirectory ? (
+          isExpanded ? <ChevronDown size={13} className="shrink-0 text-muted-foreground" /> : <ChevronRight size={13} className="shrink-0 text-muted-foreground" />
+        ) : (
+          <FileText size={13} className="shrink-0 text-muted-foreground" />
+        )}
+        <span className="min-w-0 flex-1 truncate">{node.name}</span>
+        {!isDirectory && node.size != null && (
+          <span className="shrink-0 text-[10px] text-muted-foreground/75">{formatBytes(node.size)}</span>
+        )}
+      </button>
+      {isDirectory && isExpanded && node.children && (
+        <div className="space-y-0.5">
+          {node.children.map((child) => (
+            <MemoryTreeNode
+              key={child.relativePath}
+              node={child}
+              level={level + 1}
+              selectedPath={selectedPath}
+              expanded={expanded}
+              onToggle={onToggle}
+              onOpen={onOpen}
+            />
+          ))}
+        </div>
+      )}
+    </div>
+  )
+}
