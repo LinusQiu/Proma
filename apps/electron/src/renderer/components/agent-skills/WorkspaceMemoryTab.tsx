@@ -75,7 +75,19 @@ function formatTime(ts?: number): string {
 }
 
 function autoMemoryPath(summary: WorkspaceMemorySummary, relativePath: string): string {
-  return `${summary.autoMemory.directory}/${relativePath}`
+  const directory = summary.autoMemory.directory
+  // directory 由主进程 join() 生成，Windows 上使用反斜杠；沿用其分隔符风格，
+  // 并把 relativePath 里的正斜杠归一化，避免拼出 C:\...\memory/MEMORY.md 这类混合路径。
+  const sep = directory.includes('\\') && !directory.includes('/') ? '\\' : '/'
+  const normalizedRelative = relativePath.replace(/[\\/]/g, sep)
+  const trimmedDir = directory.replace(/[\\/]+$/, '')
+  return `${trimmedDir}${sep}${normalizedRelative}`
+}
+
+/** 取绝对路径的父目录，兼容 / 与 \ 两种分隔符 */
+function dirnameOf(absolutePath: string): string {
+  const idx = Math.max(absolutePath.lastIndexOf('/'), absolutePath.lastIndexOf('\\'))
+  return idx < 0 ? absolutePath : absolutePath.slice(0, idx)
 }
 
 function filterNodes(nodes: SkillFileNode[], query: string): SkillFileNode[] {
@@ -123,8 +135,22 @@ export function WorkspaceMemoryTab({ workspaceSlug, search }: WorkspaceMemoryTab
   const [viewMode, setViewMode] = React.useState<'preview' | 'edit'>('preview')
   const [initializing, setInitializing] = React.useState(false)
   const [historyRange, setHistoryRange] = React.useState<MemoryHistoryRange>('1m')
+  const [lastSavedAt, setLastSavedAt] = React.useState<number | null>(null)
 
   const dirty = selected !== null && isDirty
+
+  // 自动保存：用 ref 持有最新的编辑状态，供防抖定时器与"切换文件前 flush"复用，
+  // 避免把 selected/editText 塞进一堆回调的依赖数组里。
+  const saveStateRef = React.useRef<{ selected: SelectedMemoryFile | null; editText: string; isDirty: boolean }>({
+    selected: null,
+    editText: '',
+    isDirty: false,
+  })
+  React.useEffect(() => {
+    saveStateRef.current = { selected, editText, isDirty }
+  }, [selected, editText, isDirty])
+  const autoSaveTimerRef = React.useRef<ReturnType<typeof setTimeout> | null>(null)
+  const persistInFlightRef = React.useRef<Promise<void> | null>(null)
   const historyRangeLabel = React.useMemo(
     () => MEMORY_HISTORY_RANGE_OPTIONS.find((option) => option.value === historyRange)?.label ?? '近 1 个月',
     [historyRange],
@@ -140,7 +166,51 @@ export function WorkspaceMemoryTab({ workspaceSlug, search }: WorkspaceMemoryTab
     return nextSummary
   }, [workspaceSlug])
 
+  /** 底层写入：把指定内容写回目标文件并刷新摘要，供手动保存与自动保存复用 */
+  const persistTarget = React.useCallback(async (target: SelectedMemoryFile, text: string): Promise<void> => {
+    if (target.kind === 'claude') {
+      await window.electronAPI.writeWorkspaceClaudeMd(workspaceSlug, text)
+    } else {
+      await window.electronAPI.writeWorkspaceAutoMemoryFile(workspaceSlug, target.relativePath, text)
+    }
+    const nextSummary = await refreshSummaryAndTree()
+    const nextAbsolute = target.kind === 'claude'
+      ? nextSummary.claudeMd.path
+      : autoMemoryPath(nextSummary, target.relativePath)
+    // 仅当用户仍停留在同一文件时才回写 absolutePath，避免覆盖已切换到别处的 selected
+    setSelected((prev) => (prev && prev.kind === target.kind && prev.relativePath === target.relativePath
+      ? { ...prev, absolutePath: nextAbsolute }
+      : prev))
+    setLastSavedAt(Date.now())
+  }, [workspaceSlug, refreshSummaryAndTree])
+
+  /** 在切换文件/刷新/卸载前，把待保存的脏内容立即刷盘（静默，失败才提示） */
+  const flushPendingSave = React.useCallback(async (): Promise<void> => {
+    if (autoSaveTimerRef.current) {
+      clearTimeout(autoSaveTimerRef.current)
+      autoSaveTimerRef.current = null
+    }
+    if (persistInFlightRef.current) {
+      await persistInFlightRef.current.catch(() => {})
+    }
+    const { selected: curSelected, editText: curText, isDirty: curDirty } = saveStateRef.current
+    if (!curSelected || !curDirty) return
+    setIsDirty(false)
+    try {
+      const p = persistTarget(curSelected, curText)
+      persistInFlightRef.current = p
+      await p
+    } catch (err) {
+      console.error('[工作区记忆] 自动保存失败:', err)
+      toast.error(err instanceof Error ? err.message : '自动保存失败')
+      setIsDirty(true)
+    } finally {
+      persistInFlightRef.current = null
+    }
+  }, [persistTarget])
+
   const openClaude = React.useCallback(async (knownSummary?: WorkspaceMemorySummary): Promise<void> => {
+    await flushPendingSave()
     setLoadingFile(true)
     try {
       const currentSummary = knownSummary ?? summary ?? await window.electronAPI.getWorkspaceMemorySummary(workspaceSlug)
@@ -159,9 +229,10 @@ export function WorkspaceMemoryTab({ workspaceSlug, search }: WorkspaceMemoryTab
     } finally {
       setLoadingFile(false)
     }
-  }, [summary, workspaceSlug])
+  }, [summary, workspaceSlug, flushPendingSave])
 
   const openAutoFile = React.useCallback(async (relativePath: string, knownSummary?: WorkspaceMemorySummary): Promise<void> => {
+    await flushPendingSave()
     setLoadingFile(true)
     try {
       const currentSummary = knownSummary ?? summary ?? await window.electronAPI.getWorkspaceMemorySummary(workspaceSlug)
@@ -180,9 +251,10 @@ export function WorkspaceMemoryTab({ workspaceSlug, search }: WorkspaceMemoryTab
     } finally {
       setLoadingFile(false)
     }
-  }, [summary, workspaceSlug])
+  }, [summary, workspaceSlug, flushPendingSave])
 
   const refresh = React.useCallback(async (): Promise<void> => {
+    await flushPendingSave()
     setLoading(true)
     try {
       const nextSummary = await refreshSummaryAndTree()
@@ -197,7 +269,7 @@ export function WorkspaceMemoryTab({ workspaceSlug, search }: WorkspaceMemoryTab
     } finally {
       setLoading(false)
     }
-  }, [openAutoFile, openClaude, refreshSummaryAndTree, selected])
+  }, [openAutoFile, openClaude, refreshSummaryAndTree, selected, flushPendingSave])
 
   React.useEffect(() => {
     let cancelled = false
@@ -234,26 +306,43 @@ export function WorkspaceMemoryTab({ workspaceSlug, search }: WorkspaceMemoryTab
     return () => { cancelled = true }
   }, [workspaceSlug])
 
+  // 防抖自动保存：编辑内容变脏后 800ms 内无新输入则静默保存
+  React.useEffect(() => {
+    if (!selected || !isDirty || loadingFile) return
+    if (autoSaveTimerRef.current) clearTimeout(autoSaveTimerRef.current)
+    autoSaveTimerRef.current = setTimeout(() => {
+      void flushPendingSave()
+    }, 800)
+    return () => {
+      if (autoSaveTimerRef.current) {
+        clearTimeout(autoSaveTimerRef.current)
+        autoSaveTimerRef.current = null
+      }
+    }
+  }, [editText, selected, isDirty, loadingFile, flushPendingSave])
+
+  // 组件卸载（如切走 Tab）时，把未保存内容刷盘，防止编辑丢失
+  React.useEffect(() => {
+    return () => {
+      void flushPendingSave()
+    }
+  }, [flushPendingSave])
+
   const handleSave = async (): Promise<void> => {
     if (!selected) return
+    if (autoSaveTimerRef.current) {
+      clearTimeout(autoSaveTimerRef.current)
+      autoSaveTimerRef.current = null
+    }
     setSaving(true)
     try {
-      if (selected.kind === 'claude') {
-        await window.electronAPI.writeWorkspaceClaudeMd(workspaceSlug, editText)
-      } else {
-        await window.electronAPI.writeWorkspaceAutoMemoryFile(workspaceSlug, selected.relativePath, editText)
-      }
       setIsDirty(false)
-      const nextSummary = await refreshSummaryAndTree()
-      if (selected.kind === 'claude') {
-        setSelected({ ...selected, absolutePath: nextSummary.claudeMd.path })
-      } else {
-        setSelected({ ...selected, absolutePath: autoMemoryPath(nextSummary, selected.relativePath) })
-      }
+      await persistTarget(selected, editText)
       toast.success('记忆文件已保存')
     } catch (err) {
       console.error('[工作区记忆] 保存失败:', err)
       toast.error(err instanceof Error ? err.message : '保存失败')
+      setIsDirty(true)
     } finally {
       setSaving(false)
     }
@@ -454,6 +543,11 @@ export function WorkspaceMemoryTab({ workspaceSlug, search }: WorkspaceMemoryTab
                     打开文件夹
                   </Button>
                 )}
+                {selected && (
+                  <span className="whitespace-nowrap text-[11px] text-muted-foreground/80">
+                    {saving ? '自动保存中…' : dirty ? '有未保存改动' : lastSavedAt ? '已自动保存' : '自动保存已开启'}
+                  </span>
+                )}
                 <Button size="sm" onClick={handleSave} disabled={!selected || saving || loadingFile || !dirty}>
                   <Save size={14} className="mr-1.5" />
                   {saving ? '保存中...' : '保存'}
@@ -480,7 +574,7 @@ export function WorkspaceMemoryTab({ workspaceSlug, search }: WorkspaceMemoryTab
                 {editText.trim() ? (
                   <MessageResponse
                     className="text-[14px] prose-headings:scroll-mt-4"
-                    basePath={selected.absolutePath.split('/').slice(0, -1).join('/')}
+                    basePath={dirnameOf(selected.absolutePath)}
                   >
                     {editText}
                   </MessageResponse>

@@ -6,7 +6,7 @@
  * - 工作区目录：~/.proma/agent-workspaces/{slug}/（Agent 的 cwd）
  */
 
-import { readFileSync, writeFileSync, existsSync, readdirSync, cpSync, rmSync, mkdirSync, statSync, renameSync, openSync, readSync, closeSync } from 'node:fs'
+import { readFileSync, writeFileSync, existsSync, readdirSync, cpSync, rmSync, mkdirSync, statSync, renameSync, openSync, readSync, closeSync, realpathSync } from 'node:fs'
 import { writeJsonFileAtomic, readJsonFileSafe } from './safe-file'
 import { randomUUID } from 'node:crypto'
 import { join, resolve, relative, isAbsolute, dirname, basename } from 'node:path'
@@ -948,6 +948,22 @@ function resolveAutoMemoryFilePath(memoryDir: string, relativePath: string): str
   const rel = relative(memoryDir, resolved)
   if (rel === '' || rel.startsWith('..') || isAbsolute(rel)) {
     throw new Error('非法路径：禁止访问 auto memory 目录外')
+  }
+  // 防御 symlink 逃逸：字符串层面的 relative 检查无法识别目录内指向外部的软链接。
+  // 对真实存在的最近祖先做 realpath 校验，确保解析后仍落在 memoryDir 之内。
+  const memoryRealDir = existsSync(memoryDir) ? realpathSync(memoryDir) : memoryDir
+  let probe = resolved
+  while (probe !== memoryDir && !existsSync(probe)) {
+    const parent = dirname(probe)
+    if (parent === probe) break
+    probe = parent
+  }
+  if (existsSync(probe)) {
+    const realProbe = realpathSync(probe)
+    const realRel = relative(memoryRealDir, realProbe)
+    if (realRel.startsWith('..') || isAbsolute(realRel)) {
+      throw new Error('非法路径：禁止通过软链接访问 auto memory 目录外')
+    }
   }
   return resolved
 }
