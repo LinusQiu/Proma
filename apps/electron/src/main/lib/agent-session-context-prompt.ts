@@ -26,19 +26,38 @@ function getSessionCleanerSkillName(workspaceSlug?: string): string {
     : 'session-cleaner'
 }
 
+function getSessionCliCommandPrefix(): string {
+  return getBundledCliPath() ? '"$PROMA_CLI"' : 'proma'
+}
+
+function buildSessionCliAccessGuide(sessionId: string, historyPath: string, workspaceSlug?: string): string {
+  const cli = getSessionCliCommandPrefix()
+  const skillName = getSessionCleanerSkillName(workspaceSlug)
+  return [
+    `优先使用 session-cleaner skill（${skillName}）读取当前会话历史；它是 Proma CLI 的薄封装，会把 Agent JSONL 清洗为干净对话。`,
+    `可用 CLI 命令前缀: ${cli}`,
+    `建议流程:`,
+    `1. ${cli} session info ${sessionId}`,
+    `2. ${cli} session outline ${sessionId}`,
+    `3. 根据 outline/search 定位后，用 ${cli} session export ${sessionId} --turns A-B 或 ${cli} session export ${sessionId} --tail N 读取片段。`,
+    `4. 只有会话很小或 CLI 护栏允许时，才用 ${cli} session export ${sessionId} 读取全量。`,
+    `不要直接 Read 原始 .jsonl 历史文件；CLI / skill 不可用或读取失败时，才兜底读取: ${historyPath}`,
+  ].join('\n')
+}
+
 function buildCurrentSessionHistoryInstruction(sessionId: string, workspaceSlug?: string): string {
+  const historyPath = getSessionHistoryPath(sessionId)
   if (canUseSessionCleaner()) {
-    const skillName = getSessionCleanerSkillName(workspaceSlug)
-    return `当前环境可使用 session-cleaner skill（${skillName}）。请优先使用它按 Session ID（${sessionId}）读取当前会话历史；它会通过 proma CLI 把 Agent JSONL 清洗为干净对话。默认完整读取当前会话；仅当历史过大、完整读入会撑爆上下文时，才改用 skill 的搜索 + turn 区间能力按需节省。不要直接 Read 原始 .jsonl 历史文件，除非 session-cleaner 不可用或读取失败。`
+    return buildSessionCliAccessGuide(sessionId, historyPath, workspaceSlug)
   }
 
-  return `请先读取上述完整历史文件以恢复上下文。会话历史文件（.jsonl）可能包含大量消息和 tool results，文件较大；如果完整读取风险较高，请优先使用 Grep 搜索关键词定位相关消息片段，再局部读取。`
+  return `请先读取上述完整历史文件以恢复上下文。会话历史文件（.jsonl）可能包含大量消息和 tool results，文件较大；如果完整读取风险较高，请优先使用 Grep 搜索关键词定位相关消息片段，再局部读取。History path: ${historyPath}`
 }
 
 function buildReferencedSessionsHistoryInstruction(workspaceSlug?: string): string {
   if (canUseSessionCleaner()) {
     const skillName = getSessionCleanerSkillName(workspaceSlug)
-    return `需要这些会话的上下文时，使用 session-cleaner skill（${skillName}）读取——它通过 proma CLI 把会话清洗为干净对话。默认正常完整读取整个会话；仅当某个会话过大、完整读入会撑爆上下文时，才改用 skill 的搜索 + turn 区间能力按需节省。不要假设会话内容，也不要直接 Read 原始 .jsonl 历史文件。`
+    return `需要这些会话的上下文时，优先使用 session-cleaner skill（${skillName}）或 Proma CLI 读取清洗后的会话历史。按 info → outline/search → export 的顺序渐进式读取；不要假设会话内容，也不要直接 Read 原始 .jsonl 历史文件。`
   }
 
   return `不要假设这些会话的内容；需要上下文时，请先读取对应的 History path，再基于读取结果继续完成任务。\n\n重要提示：会话历史文件（.jsonl）可能包含大量消息和 tool results，文件较大。请优先使用 Grep 搜索关键词定位相关消息片段，再局部读取。避免一次性 Read 整个大文件。`
@@ -184,6 +203,7 @@ export function buildReferencedSessionsPrompt(
     const historyPath = getSessionHistoryPath(referencedSessionId)
     sessionBlocks.push(
       `<session id="${referencedSessionId}" title="${title}" updatedAt="${meta.updatedAt}">\n` +
+      `CLI target: ${referencedSessionId}\n` +
       `History path: ${historyPath}\n` +
       '</session>',
     )

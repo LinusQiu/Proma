@@ -24,17 +24,16 @@ import type { AgentSendInput, AgentMessage, AgentGenerateTitleInput, AgentProvid
 import {
   PROMA_DEFAULT_PERMISSION_MODE,
   PROMA_PERMISSION_MODE_CONFIG,
-  SAFE_TOOLS,
   THINKING_SIGNATURE_ERROR_CODE,
   THINKING_SIGNATURE_ERROR_MESSAGE,
   THINKING_SIGNATURE_ERROR_TITLE,
   isPersistableSDKSystemMessage,
   normalizeMcpTransportType,
 } from '@proma/shared'
-import type { PermissionRequest, PromaPermissionMode, AskUserRequest, ExitPlanModeRequest, SDKSystemMessage } from '@proma/shared'
+import type { PromaPermissionMode, AskUserRequest, ExitPlanModeRequest, SDKSystemMessage } from '@proma/shared'
 import type { ClaudeAgentQueryOptions } from './adapters/claude-agent-adapter'
 import { isPromptTooLongError, isThinkingSignatureError, friendlyErrorMessage, mapSDKErrorToTypedError, extractErrorDetails, shouldKeepChannelOpen } from './adapters/claude-agent-adapter'
-import { isTransientNetworkError, isMalformedResponseError } from './error-patterns'
+import { isTransientNetworkError, isMalformedResponseError, isSessionNotFoundError } from './error-patterns'
 import { AgentEventBus } from './agent-event-bus'
 import { decryptApiKey, getChannelById, listChannels } from './channel-manager'
 import { getAdapter, fetchTitle, normalizeAnthropicBaseUrlForSdk, getPromaUserAgent } from '@proma/core'
@@ -170,17 +169,6 @@ function isAutoRetryableCatchError(
   // 上游响应体解析失败（JSON Parse error 等）：网关瞬时异常返回非 JSON 体，重试通常即可恢复
   if (isMalformedResponseError(rawErrorMessage, stderr)) return true
   return false
-}
-
-/**
- * 判断错误是否为 SDK session 不存在（"No conversation found with session ID"）
- *
- * 当 resume 目标 session 已过期或被清理时，SDK 会抛出此错误。
- * 此类错误可通过清除 sdkSessionId 并切换到上下文回填模式来恢复。
- */
-function isSessionNotFoundError(errorMessage: string, stderr?: string): boolean {
-  const pattern = /No conversation found.*with session/i
-  return pattern.test(errorMessage) || (!!stderr && pattern.test(stderr))
 }
 
 /** 最大自动重试次数 */
@@ -1184,18 +1172,6 @@ export class AgentOrchestrator {
         )
       }
 
-      // 始终创建 auto 权限回调（运行中可能切换到 auto）
-      const autoCanUseTool = permissionService.createCanUseTool(
-        sessionId,
-        (request: PermissionRequest) => {
-          this.eventBus.emit(sessionId, { kind: 'proma_event', event: { type: 'permission_request', request } })
-        },
-        (sid, toolInput, signal, sendAskUser) => askUserService.handleAskUserQuestion(sid, toolInput, signal, sendAskUser),
-        (request: AskUserRequest) => {
-          this.eventBus.emit(sessionId, { kind: 'proma_event', event: { type: 'ask_user_request', request } })
-        },
-      )
-
       /**
        * 判断 Bash 命令是否是只读的（计划模式下安全可执行）
        * 检测写操作特征：文件重定向、破坏性命令、包管理写操作、git 写操作等
@@ -1289,7 +1265,7 @@ export class AgentOrchestrator {
           return { behavior: 'allow' as const, updatedInput: input }
         }
 
-        // ExitPlanMode：auto/plan 模式下必须让用户确认计划。
+        // ExitPlanMode：plan 模式下必须让用户确认计划。
         if (toolName === 'ExitPlanMode') {
           console.log(`[canUseTool] ExitPlanMode: signal.aborted=${options.signal.aborted}, planModeEntered=${planModeEntered}, mode=${currentMode}`)
           const result = await handleExitPlanMode(input, options.signal)
@@ -1362,10 +1338,6 @@ export class AgentOrchestrator {
             // 其余工具拒绝
             return { behavior: 'deny' as const, message: '计划模式下不允许执行写操作，请在计划审批通过后再执行' }
           }
-
-          case 'auto':
-            return autoCanUseTool(toolName, input, options)
-
           default:
             return { behavior: 'allow' as const, updatedInput: input }
         }
@@ -1386,7 +1358,7 @@ export class AgentOrchestrator {
         env: sdkEnv,
         ...(maxTurns != null && { maxTurns }),
         sdkPermissionMode: sdkPermissionModeForPromaMode(initialPermissionMode),
-        // permissionMode 负责表达 auto/plan/bypassPermissions。
+        // permissionMode 负责表达 plan/bypassPermissions。
         // 当提供 canUseTool 回调时这里必须为 false，否则 CLI 同时收到
         // --allow-dangerously-skip-permissions 和 --permission-prompt-tool stdio
         // 两个矛盾的指令，导致 ExitPlanMode/AskUserQuestion 等交互式工具失败。
@@ -1394,7 +1366,6 @@ export class AgentOrchestrator {
         // 从实际 tool_use 流里同步，避免 UI 停留在计划阶段。
         allowDangerouslySkipPermissions: !canUseTool,
         canUseTool,
-        ...(sdkPermissionModeForPromaMode(initialPermissionMode) === 'auto' && { allowedTools: [...SAFE_TOOLS] }),
         // claude_code preset 提供基础环境信息（platform/shell/OS/git/model/知识截止日期等）
         // buildSystemPrompt 追加 Proma 特有指令（角色定义、SubAgent 策略、工作区信息等）
         systemPrompt: {
@@ -1414,7 +1385,10 @@ export class AgentOrchestrator {
         // 回退后 resume：从指定消息处继续（SDK 在同一 JSONL 内创建分支）
         ...(rewindResumeAt && { resumeSessionAt: rewindResumeAt }),
         ...(Object.keys(mcpServers).length > 0 && { mcpServers }),
-        ...(workspaceSlug && { plugins: [{ type: 'local' as const, path: getAgentWorkspacePath(workspaceSlug) }] }),
+        strictMcpConfig: true,
+        ...(workspaceSlug && {
+          plugins: [{ type: 'local' as const, path: getAgentWorkspacePath(workspaceSlug), skipMcpDiscovery: true }],
+        }),
         // 合并附加目录：用户当次输入 + 会话级 + 工作区级（详见 collectAttachedDirectories）
         ...(() => {
           const allDirs = collectAttachedDirectories({
@@ -1643,9 +1617,12 @@ export class AgentOrchestrator {
 
                 // Session 不存在错误：清除 sdkSessionId，切换到上下文回填模式重试
                 if (isSessionNotFoundError(detailedMessage, originalError) && existingSdkSessionId && canAutoRetry(attempt)) {
+                  invisibleRecoveryAttempts += 1
+                  skipNextRetryDelay = true
                   existingSdkSessionId = undefined
                   capturedSdkSessionId = undefined
                   lastRetryableError = this.prepareSessionNotFoundRecovery(sessionId, queryOptions, contextualMessage, agentCwd, workspaceSlug, accumulatedMessages, queryStartedAt)
+                  stderrChunks.length = 0
                   shouldRetryFromError = true
                   break
                 }
@@ -1826,6 +1803,22 @@ export class AgentOrchestrator {
               if (
                 capturedResultSubtype === 'error_during_execution' &&
                 capturedResultErrors?.length &&
+                isSessionNotFoundError(capturedResultErrors.join('\n'), stderrChunks.join('\n')) &&
+                existingSdkSessionId &&
+                canAutoRetry(attempt)
+              ) {
+                invisibleRecoveryAttempts += 1
+                skipNextRetryDelay = true
+                existingSdkSessionId = undefined
+                capturedSdkSessionId = undefined
+                lastRetryableError = this.prepareSessionNotFoundRecovery(sessionId, queryOptions, contextualMessage, agentCwd, workspaceSlug, accumulatedMessages, queryStartedAt)
+                stderrChunks.length = 0
+                shouldRetryFromError = true
+                break
+              }
+              if (
+                capturedResultSubtype === 'error_during_execution' &&
+                capturedResultErrors?.length &&
                 isAutoRetryableCatchError(null, capturedResultErrors.join('\n')) &&
                 canAutoRetry(attempt)
               ) {
@@ -1936,6 +1929,8 @@ export class AgentOrchestrator {
 
           // Session 不存在错误：清除 sdkSessionId，切换到上下文回填模式重试
           if (isSessionNotFoundError(rawErrorMessage, stderrOutput) && existingSdkSessionId && canAutoRetry(attempt)) {
+            invisibleRecoveryAttempts += 1
+            skipNextRetryDelay = true
             existingSdkSessionId = undefined
             capturedSdkSessionId = undefined
             lastRetryableError = this.prepareSessionNotFoundRecovery(sessionId, queryOptions, contextualMessage, agentCwd, workspaceSlug, accumulatedMessages, queryStartedAt)

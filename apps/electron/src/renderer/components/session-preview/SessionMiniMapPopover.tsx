@@ -233,7 +233,7 @@ function buildAgentMinimapItems(messages: SDKMessage[], userAvatar?: string): Ta
           : compactStatus === 'failed'
             ? '上下文压缩失败'
             : system.subtype === 'permission_denied'
-              ? '自动审批已拒绝操作'
+              ? '权限检查已拒绝操作'
               : ''
       if (preview) {
         items.push({
