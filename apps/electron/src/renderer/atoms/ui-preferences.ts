@@ -14,7 +14,7 @@ export const stickyUserMessageEnabledAtom = atom<boolean>(true)
 /** 粘贴长文本时是否自动转为附件 */
 export const longTextPasteAsAttachmentEnabledAtom = atom<boolean>(false)
 
-/** 输入框是否渲染 Markdown 富文本格式（关闭后为纯文本模式，仍保留 Mention 引用） */
+/** 输入框是否渲染 Markdown 富文本格式（默认关闭，纯文本模式；开启后渲染富文本，仍保留 Mention 引用） */
 export const richTextRenderingEnabledAtom = atom<boolean>(false)
 
 // ===== 初始化 =====

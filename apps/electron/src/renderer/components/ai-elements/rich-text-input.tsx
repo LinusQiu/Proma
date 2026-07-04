@@ -203,7 +203,7 @@ export function RichTextInput({
   // 是否启用 Mention 功能：Agent 首帧可能尚未拿到路径/slug/id，但扩展必须先注册。
   const hasMentionSupport = enableMentions ?? (workspacePath !== undefined || workspaceSlug !== undefined || workspaceId !== undefined)
 
-  // 输入框 Markdown 渲染开关：关闭后为纯文本模式（禁用格式化扩展 + 粘贴不解析 HTML），仍保留 Mention 引用
+  // 输入框 Markdown 渲染开关：关闭后为纯文本模式（禁用格式化扩展 + 粘贴跳过 HTML 解析），Mention 仍保留
   const richTextEnabled = useAtomValue(richTextRenderingEnabledAtom)
   const richTextEnabledRef = useRef(richTextEnabled)
   richTextEnabledRef.current = richTextEnabled
@@ -420,7 +420,7 @@ export function RichTextInput({
       },
       handleKeyDown: (view, event) => {
         // macOS 上 Cmd+B/S 被全局快捷键占用，用 Ctrl+B/S 作为格式化替代键
-        // 纯文本模式下富文本快捷键不生效，直接跳过（不解发事件）
+        // 纯文本模式下跳过，避免无效操作且不吃事件
         if (richTextEnabledRef.current) {
           const isMacOS = navigator.platform.startsWith('Mac')
           if (isMacOS && event.ctrlKey && !event.metaKey && !event.altKey && !event.shiftKey) {
@@ -543,7 +543,9 @@ export function RichTextInput({
         }
         setIsManuallyCollapsed(false)
       } else {
-        const markdown = htmlToMarkdown(html)
+        // 纯文本模式下跳过 markdown 特殊字符转义，保持用户所见即所得
+        // 纯文本模式下跳过 markdown 特殊字符转义，保持用户所见即所得
+        const markdown = htmlToMarkdown(html, { skipMarkdownEscape: !richTextEnabled })
         lastEditorValueRef.current = markdown
         onChange(markdown)
         onHtmlChangeRef.current?.(html)
@@ -575,9 +577,9 @@ export function RichTextInput({
     }
   }, [])
 
-  // 同步外部 value 变化（清空时）
   // 追踪编辑器实例，重建时强制同步（避免 htmlValue 草稿丢失）
   const editorInstanceRef = useRef(editor)
+  // 同步外部 value 变化（清空时）
   useEffect(() => {
     if (editor) {
       const controllerValue = value
