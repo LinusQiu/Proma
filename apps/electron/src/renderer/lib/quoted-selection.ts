@@ -1,4 +1,17 @@
 import type { QuotedSelection } from '@/atoms/preview-atoms'
+import type { QuotedSelectionSourceType } from '@/atoms/preview-atoms'
+
+export interface ParsedQuotedSelectionRef {
+  path: string
+  filename: string
+  sourceType: QuotedSelectionSourceType
+  label?: string
+}
+
+export const SELECTION_ACTION_POPOVER_SELECTOR = '[data-selection-action-popover]'
+
+const QUOTED_FILE_REGEX = /<quoted_file[^>]*>[\s\S]*?<\/quoted_file>\n*/g
+const QUOTED_CONTEXT_REGEX = /<quoted_context[^>]*>[\s\S]*?<\/quoted_context>\n*/g
 
 export function escapeXmlAttribute(value: string): string {
   return value
@@ -35,4 +48,47 @@ export function buildQuotedSelectionBlock(quotedSelection: QuotedSelection): str
 
   const safePath = escapeXmlAttribute(quotedSelection.filePath)
   return `<quoted_file path="${safePath}">\n${safeText}\n</quoted_file>\n\n`
+}
+
+function normalizeContextSourceType(value: string | undefined): QuotedSelectionSourceType {
+  if (value === 'scratch-pad') return 'scratch-pad'
+  return 'agent-history'
+}
+
+export function parseQuotedSelectionRefs(content: string): { quotes: ParsedQuotedSelectionRef[]; text: string } {
+  const quotes: ParsedQuotedSelectionRef[] = []
+
+  let quoteMatch: RegExpExecArray | null
+  QUOTED_FILE_REGEX.lastIndex = 0
+  while ((quoteMatch = QUOTED_FILE_REGEX.exec(content)) !== null) {
+    const pathMatch = quoteMatch[0].match(/path="([^"]*)"/)
+    if (!pathMatch) continue
+    const filePath = decodeXmlAttribute(pathMatch[1]!)
+    quotes.push({
+      path: filePath,
+      filename: filePath.split('/').pop() ?? filePath,
+      sourceType: 'file',
+    })
+  }
+
+  QUOTED_CONTEXT_REGEX.lastIndex = 0
+  while ((quoteMatch = QUOTED_CONTEXT_REGEX.exec(content)) !== null) {
+    const labelMatch = quoteMatch[0].match(/label="([^"]*)"/)
+    const sourceMatch = quoteMatch[0].match(/source="([^"]*)"/)
+    const label = labelMatch ? decodeXmlAttribute(labelMatch[1]!) : 'Agent 历史'
+    const sourceType = normalizeContextSourceType(sourceMatch ? decodeXmlAttribute(sourceMatch[1]!) : 'agent-history')
+    quotes.push({
+      path: label,
+      filename: label,
+      sourceType,
+      label,
+    })
+  }
+
+  const text = content
+    .replace(QUOTED_FILE_REGEX, '')
+    .replace(QUOTED_CONTEXT_REGEX, '')
+    .trim()
+
+  return { quotes, text }
 }

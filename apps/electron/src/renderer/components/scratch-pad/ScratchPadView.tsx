@@ -13,7 +13,7 @@ import StarterKit from '@tiptap/starter-kit'
 import Placeholder from '@tiptap/extension-placeholder'
 import CodeBlockLowlight from '@tiptap/extension-code-block-lowlight'
 import { useAtom, useAtomValue, useSetAtom } from 'jotai'
-import { FileDown, Bot, MessageCircle } from 'lucide-react'
+import { FileDown } from 'lucide-react'
 import { toast } from 'sonner'
 import { scratchPadContentAtom, scratchPadLoadedAtom, tabsAtom, activeTabIdAtom } from '@/atoms/tab-atoms'
 import {
@@ -55,6 +55,8 @@ import {
   getLastFocusedVoiceInputId,
   setLastFocusedVoiceInputId,
 } from '@/lib/voice-input-focus'
+import { SelectionActionPopover } from '@/components/selection/SelectionActionPopover'
+import { SELECTION_ACTION_POPOVER_SELECTOR } from '@/lib/quoted-selection'
 
 const MAX_SCRATCH_PAD_QUOTED_CHARS = 2000
 
@@ -216,7 +218,7 @@ export function ScratchPadView(): React.ReactElement {
 
     const onPointerDown = (event: PointerEvent): void => {
       const target = event.target
-      if (target instanceof Element && target.closest('[data-scratch-pad-selection-popover]')) return
+      if (target instanceof Element && target.closest(SELECTION_ACTION_POPOVER_SELECTOR)) return
       if (target instanceof Element && editorRoot.contains(target)) {
         pointerSelectingRef.current = true
         clearSelection()
@@ -524,33 +526,12 @@ export function ScratchPadView(): React.ReactElement {
         </div>
       </div>
       {selection && (
-        <div
-          data-scratch-pad-selection-popover
-          className="fixed z-[90] -translate-x-1/2 -translate-y-full rounded-xl bg-popover/95 px-2 py-1.5 text-popover-foreground shadow-xl ring-1 ring-border/40 backdrop-blur"
-          style={{ left: selection.x, top: selection.y }}
-          onMouseDown={(event) => event.preventDefault()}
-        >
-          <div className="flex items-center gap-1">
-            <button
-              type="button"
-              className="inline-flex h-8 items-center gap-1.5 rounded-lg px-2.5 text-[13px] font-medium transition-colors hover:bg-muted"
-              onClick={handleAddToAgent}
-            >
-              <Bot className="size-4" />
-              为 Agent 引用
-            </button>
-            <button
-              type="button"
-              className="inline-flex h-8 items-center gap-1.5 rounded-lg px-2.5 text-[13px] font-medium transition-colors hover:bg-muted"
-              onClick={() => {
-                void handleOpenSideChat()
-              }}
-            >
-              <MessageCircle className="size-4" />
-              打开右侧问答
-            </button>
-          </div>
-        </div>
+        <SelectionActionPopover
+          x={selection.x}
+          y={selection.y}
+          onAddToAgent={handleAddToAgent}
+          onOpenChat={handleOpenSideChat}
+        />
       )}
       {/* 底部居中悬浮：圆形语音输入按钮 */}
       <div className="absolute left-1/2 -translate-x-1/2 bottom-10 z-20">

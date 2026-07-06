@@ -6,7 +6,7 @@
  */
 
 import * as React from 'react'
-import { ChevronRight, Code2, Copy, Check, Eye, List, Bot, MessageCircle, Pencil, RefreshCw, Save, X } from 'lucide-react'
+import { ChevronRight, Code2, Copy, Check, Eye, List, Pencil, RefreshCw, Save, X } from 'lucide-react'
 import { useAtom, useAtomValue, useSetAtom } from 'jotai'
 import DOMPurify from 'dompurify'
 import { File as PierreFile } from '@pierre/diffs/react'
@@ -35,6 +35,8 @@ import { PreviewFindBar } from './PreviewFindBar'
 import { MarkdownToc } from './MarkdownToc'
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip'
 import { PIERRE_FILE_CSS } from '@/components/agent/tool-result-renderers/pierre-styles'
+import { SelectionActionPopover } from '@/components/selection/SelectionActionPopover'
+import { SELECTION_ACTION_POPOVER_SELECTOR } from '@/lib/quoted-selection'
 
 const MD_EXTS = new Set(['.md', '.markdown'])
 const PLAIN_TEXT_EDIT_EXTS = new Set(['.txt', '.text', '.log'])
@@ -421,7 +423,7 @@ export function DiffTabContent({ filePath, dirPath, sessionId, gitRoot, previewO
 
     const onMouseDown = (e: MouseEvent) => {
       const target = e.target
-      if (target instanceof Element && target.closest('[data-preview-selection-popover]')) return
+      if (target instanceof Element && target.closest(SELECTION_ACTION_POPOVER_SELECTOR)) return
       if (e.button === 0) {
         pointerSelectingRef.current = true
         clearPreviewSelection()
@@ -1404,33 +1406,12 @@ export function DiffTabContent({ filePath, dirPath, sessionId, gitRoot, previewO
           )}
         </div>
         {previewSelection && (
-          <div
-            data-preview-selection-popover
-            className="fixed z-[90] -translate-x-1/2 -translate-y-full rounded-xl bg-popover/95 px-2 py-1.5 text-popover-foreground shadow-xl ring-1 ring-border/40 backdrop-blur"
-            style={{ left: previewSelection.x, top: previewSelection.y }}
-            onMouseDown={(event) => event.preventDefault()}
-          >
-            <div className="flex items-center gap-1">
-              <button
-                type="button"
-                className="inline-flex h-8 items-center gap-1.5 rounded-lg px-2.5 text-[13px] font-medium transition-colors hover:bg-muted"
-                onClick={handleAddSelectionToAgent}
-              >
-                <Bot className="size-4" />
-                为 Agent 引用
-              </button>
-              <button
-                type="button"
-                className="inline-flex h-8 items-center gap-1.5 rounded-lg px-2.5 text-[13px] font-medium transition-colors hover:bg-muted"
-                onClick={() => {
-                  void handleOpenSelectionChat()
-                }}
-              >
-                <MessageCircle className="size-4" />
-                打开右侧问答
-              </button>
-            </div>
-          </div>
+          <SelectionActionPopover
+            x={previewSelection.x}
+            y={previewSelection.y}
+            onAddToAgent={handleAddSelectionToAgent}
+            onOpenChat={handleOpenSelectionChat}
+          />
         )}
       </div>
     </div>

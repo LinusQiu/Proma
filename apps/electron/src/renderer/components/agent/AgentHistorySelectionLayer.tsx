@@ -8,7 +8,6 @@
 
 import * as React from 'react'
 import { useAtomValue, useSetAtom } from 'jotai'
-import { Bot, MessageCircle } from 'lucide-react'
 import { toast } from 'sonner'
 import {
   agentSideChatMapAtom,
@@ -18,6 +17,8 @@ import {
 } from '@/atoms/chat-atoms'
 import { quotedSelectionMapAtom } from '@/atoms/preview-atoms'
 import { agentDiffPanelTabAtom, agentSidePanelOpenAtom } from '@/atoms/agent-atoms'
+import { SelectionActionPopover } from '@/components/selection/SelectionActionPopover'
+import { SELECTION_ACTION_POPOVER_SELECTOR } from '@/lib/quoted-selection'
 
 const MAX_AGENT_HISTORY_QUOTED_CHARS = 2000
 
@@ -75,7 +76,7 @@ export function AgentHistorySelectionLayer({
     const root = rootRef.current
     if (!root) return
     const activeEl = document.activeElement
-    if (activeEl?.closest?.('.ProseMirror, [data-input-mode], [data-agent-history-selection-popover]')) return
+    if (activeEl?.closest?.(`.ProseMirror, [data-input-mode], ${SELECTION_ACTION_POPOVER_SELECTOR}`)) return
 
     const sel = window.getSelection()
     if (!sel || sel.rangeCount === 0 || sel.isCollapsed) {
@@ -152,7 +153,7 @@ export function AgentHistorySelectionLayer({
     }
     const onPointerDown = (event: PointerEvent): void => {
       const target = event.target
-      if (target instanceof Element && target.closest('[data-agent-history-selection-popover]')) return
+      if (target instanceof Element && target.closest(SELECTION_ACTION_POPOVER_SELECTOR)) return
       if (target instanceof Element && rootRef.current?.contains(target)) {
         pointerSelectingRef.current = true
         clearSelection()
@@ -278,33 +279,12 @@ export function AgentHistorySelectionLayer({
   return (
     <>
       {selection && (
-        <div
-          data-agent-history-selection-popover
-          className="fixed z-[90] -translate-x-1/2 -translate-y-full rounded-xl bg-popover/95 px-2 py-1.5 text-popover-foreground shadow-xl ring-1 ring-border/40 backdrop-blur"
-          style={{ left: selection.x, top: selection.y }}
-          onMouseDown={(event) => event.preventDefault()}
-        >
-          <div className="flex items-center gap-1">
-            <button
-              type="button"
-              className="inline-flex h-8 items-center gap-1.5 rounded-lg px-2.5 text-[13px] font-medium transition-colors hover:bg-muted"
-              onClick={handleAddToAgent}
-            >
-              <Bot className="size-4" />
-              为 Agent 引用
-            </button>
-            <button
-              type="button"
-              className="inline-flex h-8 items-center gap-1.5 rounded-lg px-2.5 text-[13px] font-medium transition-colors hover:bg-muted"
-              onClick={() => {
-                void handleOpenChatTab()
-              }}
-            >
-              <MessageCircle className="size-4" />
-              打开右侧问答
-            </button>
-          </div>
-        </div>
+        <SelectionActionPopover
+          x={selection.x}
+          y={selection.y}
+          onAddToAgent={handleAddToAgent}
+          onOpenChat={handleOpenChatTab}
+        />
       )}
     </>
   )

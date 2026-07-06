@@ -63,7 +63,8 @@ import { environmentCheckDialogOpenAtom } from '@/atoms/environment'
 import { settingsOpenAtom, settingsTabAtom } from '@/atoms/settings-tab'
 import { useOpenPreview } from '@/components/diff/preview-opener'
 import { getFileParentPath } from '@/lib/file-utils'
-import { decodeXmlAttribute } from '@/lib/quoted-selection'
+import { parseQuotedSelectionRefs } from '@/lib/quoted-selection'
+import type { ParsedQuotedSelectionRef } from '@/lib/quoted-selection'
 import type {
   SDKMessage,
   SDKAssistantMessage,
@@ -723,51 +724,17 @@ export interface AttachedFileRef {
 }
 
 /** 解析的引用文件 */
-export interface QuotedFileRef {
-  /** 源文件路径 */
-  path: string
-  /** 源文件名 */
-  filename: string
-  /** 引用来源类型 */
-  sourceType?: 'file' | 'agent-history' | 'scratch-pad'
-  /** 面向用户展示的来源名称 */
-  label?: string
-}
+export type QuotedFileRef = ParsedQuotedSelectionRef
 
 /** 解析消息中的 <attached_files>、<quoted_file> 和 <quoted_context> 块，返回文件列表、引用列表和剩余文本 */
 export function parseAttachedFiles(content: string): { files: AttachedFileRef[]; quotes: QuotedFileRef[]; text: string } {
-  const quoteRegex = /<quoted_file[^>]*>[\s\S]*?<\/quoted_file>\n*/g
-  const contextQuoteRegex = /<quoted_context[^>]*>[\s\S]*?<\/quoted_context>\n*/g
-  const quotes: QuotedFileRef[] = []
-  let quoteMatch: RegExpExecArray | null
-  while ((quoteMatch = quoteRegex.exec(content)) !== null) {
-    const pathMatch = quoteMatch[0].match(/path="([^"]*)"/)
-    if (pathMatch) {
-      const filePath = decodeXmlAttribute(pathMatch[1]!)
-      quotes.push({ path: filePath, filename: filePath.split('/').pop() ?? filePath })
-    }
-  }
-  while ((quoteMatch = contextQuoteRegex.exec(content)) !== null) {
-    const labelMatch = quoteMatch[0].match(/label="([^"]*)"/)
-    const label = labelMatch ? decodeXmlAttribute(labelMatch[1]!) : 'Agent 历史'
-    const sourceMatch = quoteMatch[0].match(/source="([^"]*)"/)
-    const sourceType = sourceMatch ? decodeXmlAttribute(sourceMatch[1]!) : 'agent-history'
-    quotes.push({
-      path: label,
-      filename: label,
-      sourceType: sourceType === 'scratch-pad' ? 'scratch-pad' : 'agent-history',
-      label,
-    })
-  }
+  const parsedQuotes = parseQuotedSelectionRefs(content)
+  const quotes: QuotedFileRef[] = parsedQuotes.quotes
 
   const regex = /<attached_files>\n?([\s\S]*?)\n?<\/attached_files>\n*/
   const match = content.match(regex)
   if (!match) {
-    const cleanText = content
-      .replace(/<quoted_file[^>]*>[\s\S]*?<\/quoted_file>\n*/g, '')
-      .replace(/<quoted_context[^>]*>[\s\S]*?<\/quoted_context>\n*/g, '')
-      .trim()
-    return { files: [], quotes, text: cleanText }
+    return { files: [], quotes, text: parsedQuotes.text }
   }
 
   const files: AttachedFileRef[] = []
@@ -779,10 +746,7 @@ export function parseAttachedFiles(content: string): { files: AttachedFileRef[];
     }
   }
 
-  let text = content.replace(regex, '')
-  text = text.replace(/<quoted_file[^>]*>[\s\S]*?<\/quoted_file>\n*/g, '')
-  text = text.replace(/<quoted_context[^>]*>[\s\S]*?<\/quoted_context>\n*/g, '')
-  text = text.trim()
+  const text = parsedQuotes.text.replace(regex, '').trim()
   return { files, quotes, text }
 }
 

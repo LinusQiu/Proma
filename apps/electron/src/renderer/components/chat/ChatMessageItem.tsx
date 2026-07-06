@@ -40,7 +40,7 @@ import { channelsAtom } from '@/atoms/chat-atoms'
 import type { ChatMessage } from '@proma/shared'
 import type { InlineEditSubmitPayload } from './InlineEditForm'
 import { ChatToolActivityIndicator } from './ChatToolActivityIndicator'
-import { decodeXmlAttribute } from '@/lib/quoted-selection'
+import { parseQuotedSelectionRefs } from '@/lib/quoted-selection'
 
 // 重导出供外部使用
 export type { InlineEditSubmitPayload } from './InlineEditForm'
@@ -50,30 +50,8 @@ interface QuotedMessageContext {
 }
 
 function parseQuotedMessageContent(content: string): { quotes: QuotedMessageContext[]; text: string } {
-  const quotes: QuotedMessageContext[] = []
-  let text = content
-
-  const quotedFileRegex = /<quoted_file[^>]*>[\s\S]*?<\/quoted_file>\n*/g
-  const quotedContextRegex = /<quoted_context[^>]*>[\s\S]*?<\/quoted_context>\n*/g
-
-  let match: RegExpExecArray | null
-  while ((match = quotedFileRegex.exec(content)) !== null) {
-    const pathMatch = match[0].match(/path="([^"]*)"/)
-    if (!pathMatch) continue
-    const filePath = decodeXmlAttribute(pathMatch[1]!)
-    quotes.push({ label: filePath.split('/').pop() ?? filePath })
-  }
-
-  while ((match = quotedContextRegex.exec(content)) !== null) {
-    const labelMatch = match[0].match(/label="([^"]*)"/)
-    quotes.push({ label: labelMatch ? decodeXmlAttribute(labelMatch[1]!) : 'Agent 历史' })
-  }
-
-  text = text
-    .replace(quotedFileRegex, '')
-    .replace(quotedContextRegex, '')
-    .trim()
-
+  const { quotes: parsedQuotes, text } = parseQuotedSelectionRefs(content)
+  const quotes = parsedQuotes.map((quote) => ({ label: quote.label ?? quote.filename }))
   return { quotes, text }
 }
 
