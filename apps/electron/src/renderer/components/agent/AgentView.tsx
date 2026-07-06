@@ -1672,8 +1672,24 @@ export function AgentView({ sessionId }: { sessionId: string }): React.ReactElem
         .replace(/</g, '&lt;')
         .replace(/>/g, '&gt;')
         .replace(/"/g, '&quot;')
-      const safeText = quotedSelection.text.replace(/<\/quoted_file>/gi, '</quoted_file_>')
-      const quotedBlock = `<quoted_file path="${safePath}">\n${safeText}\n</quoted_file>\n\n`
+      const safeLabel = (quotedSelection.sourceLabel ?? quotedSelection.filePath)
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;')
+      const safeMessageId = (quotedSelection.messageId ?? '')
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;')
+      const safeRole = quotedSelection.messageRole ?? ''
+      const safeText = quotedSelection.text
+        .replace(/<\/quoted_file>/gi, '</quoted_file_>')
+        .replace(/<\/quoted_context>/gi, '</quoted_context_>')
+      const safeSource = quotedSelection.sourceType ?? 'file'
+      const quotedBlock = safeSource === 'file'
+        ? `<quoted_file path="${safePath}">\n${safeText}\n</quoted_file>\n\n`
+        : `<quoted_context source="${safeSource}" label="${safeLabel}" message_id="${safeMessageId}" role="${safeRole}">\n${safeText}\n</quoted_context>\n\n`
       fileReferences = fileReferences + quotedBlock
 
       store.set(quotedSelectionMapAtom, (prev) => {
@@ -2421,6 +2437,7 @@ export function AgentView({ sessionId }: { sessionId: string }): React.ReactElem
                   <QuotedSelectionChip
                     text={currentQuotedSelection.text}
                     filePath={currentQuotedSelection.filePath}
+                    sourceLabel={currentQuotedSelection.sourceLabel}
                     onRemove={handleRemoveQuotedSelection}
                   />
                 )}

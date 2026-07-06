@@ -11,7 +11,7 @@
 
 import * as React from 'react'
 import { useAtomValue } from 'jotai'
-import { AlertCircle, Pencil, RotateCcw, Trash2 } from 'lucide-react'
+import { AlertCircle, Pencil, Quote, RotateCcw, Trash2 } from 'lucide-react'
 import {
   Message,
   MessageHeader,
@@ -43,6 +43,55 @@ import { ChatToolActivityIndicator } from './ChatToolActivityIndicator'
 
 // 重导出供外部使用
 export type { InlineEditSubmitPayload } from './InlineEditForm'
+
+interface QuotedMessageContext {
+  label: string
+}
+
+function decodeXmlAttribute(value: string): string {
+  return value
+    .replace(/&quot;/g, '"')
+    .replace(/&gt;/g, '>')
+    .replace(/&lt;/g, '<')
+    .replace(/&amp;/g, '&')
+}
+
+function parseQuotedMessageContent(content: string): { quotes: QuotedMessageContext[]; text: string } {
+  const quotes: QuotedMessageContext[] = []
+  let text = content
+
+  const quotedFileRegex = /<quoted_file[^>]*>[\s\S]*?<\/quoted_file>\n*/g
+  const quotedContextRegex = /<quoted_context[^>]*>[\s\S]*?<\/quoted_context>\n*/g
+
+  let match: RegExpExecArray | null
+  while ((match = quotedFileRegex.exec(content)) !== null) {
+    const pathMatch = match[0].match(/path="([^"]*)"/)
+    if (!pathMatch) continue
+    const filePath = decodeXmlAttribute(pathMatch[1]!)
+    quotes.push({ label: filePath.split('/').pop() ?? filePath })
+  }
+
+  while ((match = quotedContextRegex.exec(content)) !== null) {
+    const labelMatch = match[0].match(/label="([^"]*)"/)
+    quotes.push({ label: labelMatch ? decodeXmlAttribute(labelMatch[1]!) : 'Agent 历史' })
+  }
+
+  text = text
+    .replace(quotedFileRegex, '')
+    .replace(quotedContextRegex, '')
+    .trim()
+
+  return { quotes, text }
+}
+
+function QuoteChip({ quote }: { quote: QuotedMessageContext }): React.ReactElement {
+  return (
+    <div className="inline-flex max-w-full min-w-0 items-center gap-1.5 rounded-md bg-primary/8 border border-primary/20 px-2.5 py-1 text-[12px] text-muted-foreground">
+      <Quote className="size-3.5 shrink-0 text-primary/60" />
+      <span className="min-w-0 max-w-full truncate">{quote.label}</span>
+    </div>
+  )
+}
 
 /**
  * 格式化消息时间（简略写法）
@@ -115,6 +164,10 @@ export const ChatMessageItem = React.memo(function ChatMessageItem({
   const [isDeleting, setIsDeleting] = React.useState(false)
   const userProfile = useAtomValue(userProfileAtom)
   const channels = useAtomValue(channelsAtom)
+  const parsedUserContent = React.useMemo(
+    () => message.role === 'user' ? parseQuotedMessageContent(message.content) : { quotes: [], text: message.content },
+    [message.content, message.role],
+  )
 
   /** 确认删除消息 */
   const handleDeleteConfirm = async (): Promise<void> => {
@@ -222,14 +275,21 @@ export const ChatMessageItem = React.memo(function ChatMessageItem({
               {!isInlineEditing && message.attachments && message.attachments.length > 0 && (
                 <MessageAttachments attachments={message.attachments} onImageEditComplete={onImageEditComplete} />
               )}
+              {!isInlineEditing && parsedUserContent.quotes.length > 0 && (
+                <div className="flex flex-wrap gap-1.5 mb-2">
+                  {parsedUserContent.quotes.map((quote, index) => (
+                    <QuoteChip key={`${quote.label}:${index}`} quote={quote} />
+                  ))}
+                </div>
+              )}
               {isInlineEditing ? (
                 <InlineEditForm
                   message={message}
                   onSubmit={handleInlineEditSubmit}
                   onCancel={() => onCancelInlineEdit?.()}
                 />
-              ) : message.content && (
-                <UserMessageContent>{message.content}</UserMessageContent>
+              ) : parsedUserContent.text && (
+                <UserMessageContent>{parsedUserContent.text}</UserMessageContent>
               )}
             </>
           )}
@@ -238,7 +298,7 @@ export const ChatMessageItem = React.memo(function ChatMessageItem({
         {/* 操作按钮（非 streaming 时显示，hover 时可见） */}
         {(message.content || message.error || (message.attachments && message.attachments.length > 0)) && !isStreaming && !isInlineEditing && (
           <MessageActions className="pl-[46px] mt-0.5 min-h-[28px]">
-            <CopyButton content={message.content} />
+            <CopyButton content={message.role === 'user' ? parsedUserContent.text : message.content} />
             {message.role === 'assistant' && conversationId && (
               <MigrateToAgentButton conversationId={conversationId} />
             )}

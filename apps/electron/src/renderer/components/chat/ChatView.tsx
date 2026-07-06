@@ -14,7 +14,7 @@
  */
 
 import * as React from 'react'
-import { useAtomValue, useSetAtom } from 'jotai'
+import { useAtomValue, useSetAtom, useStore } from 'jotai'
 import { AlertCircle, X } from 'lucide-react'
 import { ChatHeader } from './ChatHeader'
 import { ChatMessages } from './ChatMessages'
@@ -33,6 +33,8 @@ import {
   INITIAL_MESSAGE_LIMIT,
 } from '@/atoms/chat-atoms'
 import type { PendingAttachment, ChatPendingMessage } from '@/atoms/chat-atoms'
+import { quotedSelectionMapAtom } from '@/atoms/preview-atoms'
+import type { QuotedSelection } from '@/atoms/preview-atoms'
 import { promptConfigAtom, promptSidebarOpenAtom, conversationPromptIdAtom, resolveSystemMessage, selectedPromptIdAtom } from '@/atoms/system-prompt-atoms'
 import { activeToolIdsAtom } from '@/atoms/chat-tool-atoms'
 import { userProfileAtom } from '@/atoms/user-profile'
@@ -55,6 +57,31 @@ import type {
 
 interface ChatViewProps {
   conversationId: string
+}
+
+function escapeXmlAttribute(value: string): string {
+  return value
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+}
+
+function buildQuotedSelectionBlock(quotedSelection: QuotedSelection): string {
+  const safeText = quotedSelection.text
+    .replace(/<\/quoted_file>/gi, '</quoted_file_>')
+    .replace(/<\/quoted_context>/gi, '</quoted_context_>')
+
+  if (quotedSelection.sourceType && quotedSelection.sourceType !== 'file') {
+    const safeLabel = escapeXmlAttribute(quotedSelection.sourceLabel ?? quotedSelection.filePath)
+    const safeMessageId = escapeXmlAttribute(quotedSelection.messageId ?? '')
+    const safeRole = quotedSelection.messageRole ?? ''
+    const safeSource = escapeXmlAttribute(quotedSelection.sourceType)
+    return `<quoted_context source="${safeSource}" label="${safeLabel}" message_id="${safeMessageId}" role="${safeRole}">\n${safeText}\n</quoted_context>\n\n`
+  }
+
+  const safePath = escapeXmlAttribute(quotedSelection.filePath)
+  return `<quoted_file path="${safePath}">\n${safeText}\n</quoted_file>\n\n`
 }
 
 function cleanupPendingAttachments(attachments: PendingAttachment[]): void {
@@ -83,6 +110,7 @@ function ChatViewInner({ conversationId }: ChatViewProps): React.ReactElement {
   const [hasMoreMessages, setHasMoreMessages] = React.useState(false)
   const [messagesLoaded, setMessagesLoaded] = React.useState(false)
   const [inlineEditingMessageId, setInlineEditingMessageId] = React.useState<string | null>(null)
+  const store = useStore()
 
   // ===== Per-conversation hooks（分屏独立） =====
   const [selectedModel, setSelectedModel] = useConversationModel()
@@ -290,6 +318,22 @@ function ChatViewInner({ conversationId }: ChatViewProps): React.ReactElement {
       setPendingAttachments([])
     }
 
+    const quotedSelection = store.get(quotedSelectionMapAtom).get(conversationId)
+    const finalContent = quotedSelection
+      ? buildQuotedSelectionBlock(quotedSelection) + content
+      : content
+
+    if (quotedSelection) {
+      const capturedAt = quotedSelection.capturedAt
+      store.set(quotedSelectionMapAtom, (prev) => {
+        const current = prev.get(conversationId)
+        if (!current || current.capturedAt !== capturedAt) return prev
+        const next = new Map(prev)
+        next.delete(conversationId)
+        return next
+      })
+    }
+
     // 初始化当前对话的流式状态
     setStreamingStates((prev) => {
       const map = new Map(prev)
@@ -319,7 +363,7 @@ function ChatViewInner({ conversationId }: ChatViewProps): React.ReactElement {
 
     const input: ChatSendInput = {
       conversationId,
-      userMessage: content,
+      userMessage: finalContent,
       messageHistory: [], // 后端已改为从磁盘读取完整历史，无需前端传入
       channelId: selectedModel.channelId,
       modelId: selectedModel.modelId,
@@ -337,7 +381,7 @@ function ChatViewInner({ conversationId }: ChatViewProps): React.ReactElement {
       {
         id: `temp-${Date.now()}`,
         role: 'user',
-        content,
+        content: finalContent,
         createdAt: Date.now(),
         attachments: savedAttachments.length > 0 ? savedAttachments : undefined,
       },
@@ -373,6 +417,7 @@ function ChatViewInner({ conversationId }: ChatViewProps): React.ReactElement {
     setChatStreamErrors,
     setStreamingStates,
     setConversations,
+    store,
   ])
 
   // ===== 自动发送快速任务消息 =====

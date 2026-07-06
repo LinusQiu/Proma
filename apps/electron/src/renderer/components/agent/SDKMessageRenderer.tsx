@@ -727,30 +727,51 @@ export interface QuotedFileRef {
   path: string
   /** 源文件名 */
   filename: string
+  /** 引用来源类型 */
+  sourceType?: 'file' | 'agent-history'
+  /** 面向用户展示的来源名称 */
+  label?: string
 }
 
-/** 解析消息中的 <attached_files> 块和 <quoted_file> 块，返回文件列表、引用列表和剩余文本 */
+function decodeXmlAttribute(value: string): string {
+  return value
+    .replace(/&quot;/g, '"')
+    .replace(/&gt;/g, '>')
+    .replace(/&lt;/g, '<')
+    .replace(/&amp;/g, '&')
+}
+
+/** 解析消息中的 <attached_files>、<quoted_file> 和 <quoted_context> 块，返回文件列表、引用列表和剩余文本 */
 export function parseAttachedFiles(content: string): { files: AttachedFileRef[]; quotes: QuotedFileRef[]; text: string } {
   const quoteRegex = /<quoted_file[^>]*>[\s\S]*?<\/quoted_file>\n*/g
+  const contextQuoteRegex = /<quoted_context[^>]*>[\s\S]*?<\/quoted_context>\n*/g
   const quotes: QuotedFileRef[] = []
   let quoteMatch: RegExpExecArray | null
   while ((quoteMatch = quoteRegex.exec(content)) !== null) {
     const pathMatch = quoteMatch[0].match(/path="([^"]*)"/)
     if (pathMatch) {
-      // 反解 XML 实体：&amp; 必须最后做，否则会被先一步解出的 & 误伤
-      const filePath = pathMatch[1]!
-        .replace(/&quot;/g, '"')
-        .replace(/&gt;/g, '>')
-        .replace(/&lt;/g, '<')
-        .replace(/&amp;/g, '&')
+      const filePath = decodeXmlAttribute(pathMatch[1]!)
       quotes.push({ path: filePath, filename: filePath.split('/').pop() ?? filePath })
     }
+  }
+  while ((quoteMatch = contextQuoteRegex.exec(content)) !== null) {
+    const labelMatch = quoteMatch[0].match(/label="([^"]*)"/)
+    const label = labelMatch ? decodeXmlAttribute(labelMatch[1]!) : 'Agent 历史'
+    quotes.push({
+      path: label,
+      filename: label,
+      sourceType: 'agent-history',
+      label,
+    })
   }
 
   const regex = /<attached_files>\n?([\s\S]*?)\n?<\/attached_files>\n*/
   const match = content.match(regex)
   if (!match) {
-    const cleanText = content.replace(/<quoted_file[^>]*>[\s\S]*?<\/quoted_file>\n*/g, '').trim()
+    const cleanText = content
+      .replace(/<quoted_file[^>]*>[\s\S]*?<\/quoted_file>\n*/g, '')
+      .replace(/<quoted_context[^>]*>[\s\S]*?<\/quoted_context>\n*/g, '')
+      .trim()
     return { files: [], quotes, text: cleanText }
   }
 
@@ -765,6 +786,7 @@ export function parseAttachedFiles(content: string): { files: AttachedFileRef[];
 
   let text = content.replace(regex, '')
   text = text.replace(/<quoted_file[^>]*>[\s\S]*?<\/quoted_file>\n*/g, '')
+  text = text.replace(/<quoted_context[^>]*>[\s\S]*?<\/quoted_context>\n*/g, '')
   text = text.trim()
   return { files, quotes, text }
 }
@@ -866,10 +888,11 @@ function AttachedFileChip({ file }: { file: AttachedFileRef }): React.ReactEleme
 
 /** 引用文件 Chip（显示在用户消息中，表示该消息引用了某个文件的选中内容） */
 function QuoteChip({ quote }: { quote: QuotedFileRef }): React.ReactElement {
+  const label = quote.label ?? quote.filename
   return (
     <div className="inline-flex items-center gap-1.5 rounded-md bg-primary/8 border border-primary/20 px-2.5 py-1 text-[12px] text-muted-foreground">
       <Quote className="size-3.5 shrink-0 text-primary/60" />
-      <span className="truncate max-w-[200px]">{quote.filename}</span>
+      <span className="truncate max-w-[200px]">{label}</span>
     </div>
   )
 }
