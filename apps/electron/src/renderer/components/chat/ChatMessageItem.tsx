@@ -40,20 +40,13 @@ import { channelsAtom } from '@/atoms/chat-atoms'
 import type { ChatMessage } from '@proma/shared'
 import type { InlineEditSubmitPayload } from './InlineEditForm'
 import { ChatToolActivityIndicator } from './ChatToolActivityIndicator'
+import { decodeXmlAttribute } from '@/lib/quoted-selection'
 
 // 重导出供外部使用
 export type { InlineEditSubmitPayload } from './InlineEditForm'
 
 interface QuotedMessageContext {
   label: string
-}
-
-function decodeXmlAttribute(value: string): string {
-  return value
-    .replace(/&quot;/g, '"')
-    .replace(/&gt;/g, '>')
-    .replace(/&lt;/g, '<')
-    .replace(/&amp;/g, '&')
 }
 
 function parseQuotedMessageContent(content: string): { quotes: QuotedMessageContext[]; text: string } {

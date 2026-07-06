@@ -80,6 +80,7 @@ export function ScratchPadView(): React.ReactElement {
   const [selection, setSelection] = React.useState<ScratchPadSelection | null>(null)
   const pointerSelectingRef = React.useRef(false)
   const captureTimerRef = React.useRef<number | null>(null)
+  const openSideChatPendingRef = React.useRef(false)
 
   // 用 ref 追踪最新内容，避免在 useEffect deps 里包含 content 导致循环
   const contentRef = React.useRef(content)
@@ -286,9 +287,11 @@ export function ScratchPadView(): React.ReactElement {
 
   const handleOpenSideChat = React.useCallback(async (): Promise<void> => {
     if (!selection) return
+    if (openSideChatPendingRef.current) return
     const sessionId = getTargetAgentSessionId()
     if (!sessionId) return
 
+    openSideChatPendingRef.current = true
     try {
       const conversation = await window.electronAPI.createConversation(
         '草稿选区问答',
@@ -333,6 +336,8 @@ export function ScratchPadView(): React.ReactElement {
     } catch (error) {
       console.error('[ScratchPad] 打开草稿选区右侧问答失败:', error)
       toast.error('打开右侧问答失败')
+    } finally {
+      openSideChatPendingRef.current = false
     }
   }, [
     clearSelection,

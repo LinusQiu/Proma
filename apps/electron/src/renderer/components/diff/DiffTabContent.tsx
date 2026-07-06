@@ -321,6 +321,7 @@ export function DiffTabContent({ filePath, dirPath, sessionId, gitRoot, previewO
   const shadowRootsRef = React.useRef<Set<ShadowRoot>>(new Set())
   const pointerSelectingRef = React.useRef(false)
   const captureTimerRef = React.useRef<number | null>(null)
+  const openSelectionChatPendingRef = React.useRef(false)
   /** 当前正在展示的截断 toast id；选中回落到上限内或选区消失时主动 dismiss */
   const lastToastIdRef = React.useRef<string | null>(null)
 
@@ -970,6 +971,8 @@ export function DiffTabContent({ filePath, dirPath, sessionId, gitRoot, previewO
 
   const handleOpenSelectionChat = React.useCallback(async (): Promise<void> => {
     if (!previewSelection) return
+    if (openSelectionChatPendingRef.current) return
+    openSelectionChatPendingRef.current = true
     try {
       const conversation = await window.electronAPI.createConversation(
         '预览选区问答',
@@ -1012,6 +1015,8 @@ export function DiffTabContent({ filePath, dirPath, sessionId, gitRoot, previewO
     } catch (error) {
       console.error('[DiffTabContent] 打开预览选区聊天标签失败:', error)
       toast.error('打开聊天标签失败')
+    } finally {
+      openSelectionChatPendingRef.current = false
     }
   }, [
     clearPreviewSelection,

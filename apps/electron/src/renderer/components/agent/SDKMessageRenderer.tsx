@@ -63,6 +63,7 @@ import { environmentCheckDialogOpenAtom } from '@/atoms/environment'
 import { settingsOpenAtom, settingsTabAtom } from '@/atoms/settings-tab'
 import { useOpenPreview } from '@/components/diff/preview-opener'
 import { getFileParentPath } from '@/lib/file-utils'
+import { decodeXmlAttribute } from '@/lib/quoted-selection'
 import type {
   SDKMessage,
   SDKAssistantMessage,
@@ -728,17 +729,9 @@ export interface QuotedFileRef {
   /** 源文件名 */
   filename: string
   /** 引用来源类型 */
-  sourceType?: 'file' | 'agent-history'
+  sourceType?: 'file' | 'agent-history' | 'scratch-pad'
   /** 面向用户展示的来源名称 */
   label?: string
-}
-
-function decodeXmlAttribute(value: string): string {
-  return value
-    .replace(/&quot;/g, '"')
-    .replace(/&gt;/g, '>')
-    .replace(/&lt;/g, '<')
-    .replace(/&amp;/g, '&')
 }
 
 /** 解析消息中的 <attached_files>、<quoted_file> 和 <quoted_context> 块，返回文件列表、引用列表和剩余文本 */
@@ -757,10 +750,12 @@ export function parseAttachedFiles(content: string): { files: AttachedFileRef[];
   while ((quoteMatch = contextQuoteRegex.exec(content)) !== null) {
     const labelMatch = quoteMatch[0].match(/label="([^"]*)"/)
     const label = labelMatch ? decodeXmlAttribute(labelMatch[1]!) : 'Agent 历史'
+    const sourceMatch = quoteMatch[0].match(/source="([^"]*)"/)
+    const sourceType = sourceMatch ? decodeXmlAttribute(sourceMatch[1]!) : 'agent-history'
     quotes.push({
       path: label,
       filename: label,
-      sourceType: 'agent-history',
+      sourceType: sourceType === 'scratch-pad' ? 'scratch-pad' : 'agent-history',
       label,
     })
   }

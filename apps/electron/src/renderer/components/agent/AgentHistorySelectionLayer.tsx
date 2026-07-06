@@ -65,6 +65,7 @@ export function AgentHistorySelectionLayer({
   const [selection, setSelection] = React.useState<AgentHistorySelection | null>(null)
   const pointerSelectingRef = React.useRef(false)
   const captureTimerRef = React.useRef<number | null>(null)
+  const openChatPendingRef = React.useRef(false)
 
   const clearSelection = React.useCallback((): void => {
     setSelection(null)
@@ -212,6 +213,8 @@ export function AgentHistorySelectionLayer({
 
   const handleOpenChatTab = React.useCallback(async (): Promise<void> => {
     if (!selection) return
+    if (openChatPendingRef.current) return
+    openChatPendingRef.current = true
     try {
       const conversation = await window.electronAPI.createConversation(
         '历史选区问答',
@@ -256,6 +259,8 @@ export function AgentHistorySelectionLayer({
     } catch (error) {
       console.error('[AgentMessages] 打开历史选区聊天标签失败:', error)
       toast.error('打开聊天标签失败')
+    } finally {
+      openChatPendingRef.current = false
     }
   }, [
     clearSelection,

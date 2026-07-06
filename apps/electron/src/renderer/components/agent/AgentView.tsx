@@ -112,6 +112,7 @@ import { useOpenPreview } from '@/components/diff/preview-opener'
 import type { AgentSendInput, AgentPendingFile, FileDialogLargeFile, ModelOption, SDKMessage, SDKUserMessage } from '@proma/shared'
 import { inferContextWindow, MAX_ATTACHMENT_SIZE } from '@proma/shared'
 import { fileToBase64, formatFileNames, getFileParentPath } from '@/lib/file-utils'
+import { buildQuotedSelectionBlock } from '@/lib/quoted-selection'
 import { createClipboardPendingFile, createClipboardTextDraft, makeUniqueAttachmentName } from '@/lib/clipboard-text-attachment'
 import {
   createAgentQueuedMessage,
@@ -1666,31 +1667,7 @@ export function AgentView({ sessionId }: { sessionId: string }): React.ReactElem
     const quotedSelection = store.get(quotedSelectionMapAtom).get(sessionId)
     if (quotedSelection) {
       const capturedAt = quotedSelection.capturedAt
-      // XML 转义：path 走完整实体编码（&, <, >, "），text 仅需防误闭合外层标签
-      const safePath = quotedSelection.filePath
-        .replace(/&/g, '&amp;')
-        .replace(/</g, '&lt;')
-        .replace(/>/g, '&gt;')
-        .replace(/"/g, '&quot;')
-      const safeLabel = (quotedSelection.sourceLabel ?? quotedSelection.filePath)
-        .replace(/&/g, '&amp;')
-        .replace(/</g, '&lt;')
-        .replace(/>/g, '&gt;')
-        .replace(/"/g, '&quot;')
-      const safeMessageId = (quotedSelection.messageId ?? '')
-        .replace(/&/g, '&amp;')
-        .replace(/</g, '&lt;')
-        .replace(/>/g, '&gt;')
-        .replace(/"/g, '&quot;')
-      const safeRole = quotedSelection.messageRole ?? ''
-      const safeText = quotedSelection.text
-        .replace(/<\/quoted_file>/gi, '</quoted_file_>')
-        .replace(/<\/quoted_context>/gi, '</quoted_context_>')
-      const safeSource = quotedSelection.sourceType ?? 'file'
-      const quotedBlock = safeSource === 'file'
-        ? `<quoted_file path="${safePath}">\n${safeText}\n</quoted_file>\n\n`
-        : `<quoted_context source="${safeSource}" label="${safeLabel}" message_id="${safeMessageId}" role="${safeRole}">\n${safeText}\n</quoted_context>\n\n`
-      fileReferences = fileReferences + quotedBlock
+      fileReferences = fileReferences + buildQuotedSelectionBlock(quotedSelection)
 
       store.set(quotedSelectionMapAtom, (prev) => {
         const m = new Map(prev)

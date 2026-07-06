@@ -34,7 +34,6 @@ import {
 } from '@/atoms/chat-atoms'
 import type { PendingAttachment, ChatPendingMessage } from '@/atoms/chat-atoms'
 import { quotedSelectionMapAtom } from '@/atoms/preview-atoms'
-import type { QuotedSelection } from '@/atoms/preview-atoms'
 import { promptConfigAtom, promptSidebarOpenAtom, conversationPromptIdAtom, resolveSystemMessage, selectedPromptIdAtom } from '@/atoms/system-prompt-atoms'
 import { activeToolIdsAtom } from '@/atoms/chat-tool-atoms'
 import { userProfileAtom } from '@/atoms/user-profile'
@@ -48,6 +47,7 @@ import {
 import { registerPendingTitle } from '@/hooks/useGlobalChatListeners'
 import { draftSessionIdsAtom } from '@/atoms/draft-session-atoms'
 import { cn } from '@/lib/utils'
+import { buildQuotedSelectionBlock } from '@/lib/quoted-selection'
 import type {
   ChatMessage,
   ChatSendInput,
@@ -57,31 +57,6 @@ import type {
 
 interface ChatViewProps {
   conversationId: string
-}
-
-function escapeXmlAttribute(value: string): string {
-  return value
-    .replace(/&/g, '&amp;')
-    .replace(/</g, '&lt;')
-    .replace(/>/g, '&gt;')
-    .replace(/"/g, '&quot;')
-}
-
-function buildQuotedSelectionBlock(quotedSelection: QuotedSelection): string {
-  const safeText = quotedSelection.text
-    .replace(/<\/quoted_file>/gi, '</quoted_file_>')
-    .replace(/<\/quoted_context>/gi, '</quoted_context_>')
-
-  if (quotedSelection.sourceType && quotedSelection.sourceType !== 'file') {
-    const safeLabel = escapeXmlAttribute(quotedSelection.sourceLabel ?? quotedSelection.filePath)
-    const safeMessageId = escapeXmlAttribute(quotedSelection.messageId ?? '')
-    const safeRole = quotedSelection.messageRole ?? ''
-    const safeSource = escapeXmlAttribute(quotedSelection.sourceType)
-    return `<quoted_context source="${safeSource}" label="${safeLabel}" message_id="${safeMessageId}" role="${safeRole}">\n${safeText}\n</quoted_context>\n\n`
-  }
-
-  const safePath = escapeXmlAttribute(quotedSelection.filePath)
-  return `<quoted_file path="${safePath}">\n${safeText}\n</quoted_file>\n\n`
 }
 
 function cleanupPendingAttachments(attachments: PendingAttachment[]): void {
