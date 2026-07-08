@@ -161,6 +161,10 @@ export function MainArea(): React.ReactElement {
     document.addEventListener('mouseup', onMouseUp)
   }, [rightWorkspaceRatio, setRightWorkspaceRatio])
 
+  const handleCloseScratchPanel = React.useCallback(() => {
+    setScratchPanelOpen(false)
+  }, [setScratchPanelOpen])
+
   React.useEffect(() => {
     if (tabs.length === 0) {
       console.warn('[FLASH-DEBUG] MainArea: tabs.length === 0, showing WelcomeView!', new Error().stack)
@@ -272,7 +276,7 @@ export function MainArea(): React.ReactElement {
                 )}
                 {showScratchPanel && (
                   <div className="min-w-[260px] h-full overflow-hidden" style={scratchPaneStyle}>
-                    <ScratchPadPane onClose={() => setScratchPanelOpen(false)} />
+                    <ScratchPadPane onClose={handleCloseScratchPanel} />
                   </div>
                 )}
               </div>

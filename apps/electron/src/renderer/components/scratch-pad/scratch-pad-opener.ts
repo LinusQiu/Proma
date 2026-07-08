@@ -59,8 +59,8 @@ export function openScratchInSplit(store: JotaiStore): boolean {
   const agentTab = findTargetAgentTab(tabs, sessions, currentSessionId)
   if (!agentTab) return false
 
-  const scratch = tabs.find((tab) => tab.id === SCRATCH_PAD_ID) ?? scratchTab
-  const nextTabs = [scratch, agentTab]
+  const hasAgentTab = tabs.some((tab) => tab.id === agentTab.id)
+  const nextTabs = hasAgentTab ? tabs : [...tabs, agentTab]
   store.set(tabsAtom, nextTabs)
   store.set(activeTabIdAtom, agentTab.id)
   store.set(appModeAtom, 'agent')
