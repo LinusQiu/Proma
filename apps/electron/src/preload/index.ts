@@ -49,6 +49,7 @@ import type {
   GetTaskOutputResult,
   StopTaskInput,
   WorkspaceMcpConfig,
+  WorkspaceBoard,
   SkillMeta,
   OtherWorkspaceSkillsGroup,
   WorkspaceCapabilities,
@@ -572,6 +573,12 @@ export interface ElectronAPI {
 
   /** 写入工作区 auto memory 文件 */
   writeWorkspaceAutoMemoryFile: (workspaceSlug: string, relativePath: string, content: string) => Promise<void>
+
+  /** 读取工作区协作台文件 */
+  readWorkspaceBoard: (workspaceSlug: string) => Promise<WorkspaceBoard>
+
+  /** 写入工作区协作台文件 */
+  writeWorkspaceBoard: (workspaceSlug: string, board: WorkspaceBoard) => Promise<WorkspaceBoard>
 
   /** 订阅 Agent 流式事件（返回清理函数） */
   onAgentStreamEvent: (callback: (event: AgentStreamEvent) => void) => () => void
@@ -1638,6 +1645,14 @@ const electronAPI: ElectronAPI = {
 
   writeWorkspaceAutoMemoryFile: (workspaceSlug: string, relativePath: string, content: string) => {
     return ipcRenderer.invoke(AGENT_IPC_CHANNELS.WRITE_WORKSPACE_AUTO_MEMORY_FILE, workspaceSlug, relativePath, content)
+  },
+
+  readWorkspaceBoard: (workspaceSlug: string) => {
+    return ipcRenderer.invoke(AGENT_IPC_CHANNELS.READ_WORKSPACE_BOARD, workspaceSlug)
+  },
+
+  writeWorkspaceBoard: (workspaceSlug: string, board: WorkspaceBoard) => {
+    return ipcRenderer.invoke(AGENT_IPC_CHANNELS.WRITE_WORKSPACE_BOARD, workspaceSlug, board)
   },
 
   onAgentStreamEvent: (callback: (event: AgentStreamEvent) => void) => {

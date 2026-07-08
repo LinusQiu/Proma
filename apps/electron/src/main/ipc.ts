@@ -56,6 +56,7 @@ import type {
   GetTaskOutputResult,
   StopTaskInput,
   WorkspaceMcpConfig,
+  WorkspaceBoard,
   SkillMeta,
   SkillFileContent,
   WorkspaceCapabilities,
@@ -225,6 +226,8 @@ import {
   listWorkspaceAutoMemoryFiles,
   readWorkspaceAutoMemoryFile,
   writeWorkspaceAutoMemoryFile,
+  readWorkspaceBoard,
+  writeWorkspaceBoard,
   getWorkspaceAttachedDirectories,
   getWorkspaceAttachedFiles,
   attachWorkspaceDirectory,
@@ -2200,6 +2203,20 @@ export function registerIpcHandlers(): void {
     AGENT_IPC_CHANNELS.WRITE_WORKSPACE_AUTO_MEMORY_FILE,
     async (_, workspaceSlug: string, relativePath: string, content: string): Promise<void> => {
       writeWorkspaceAutoMemoryFile(workspaceSlug, relativePath, content)
+    }
+  )
+
+  ipcMain.handle(
+    AGENT_IPC_CHANNELS.READ_WORKSPACE_BOARD,
+    async (_, workspaceSlug: string): Promise<WorkspaceBoard> => {
+      return readWorkspaceBoard(workspaceSlug)
+    }
+  )
+
+  ipcMain.handle(
+    AGENT_IPC_CHANNELS.WRITE_WORKSPACE_BOARD,
+    async (_, workspaceSlug: string, board: WorkspaceBoard): Promise<WorkspaceBoard> => {
+      return writeWorkspaceBoard(workspaceSlug, board)
     }
   )
 

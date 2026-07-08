@@ -36,7 +36,7 @@ import {
 } from '@/atoms/automation-atoms'
 import { agentWorkspacesAtom, agentSessionsAtom, agentChannelIdsAtom, currentAgentWorkspaceIdAtom } from '@/atoms/agent-atoms'
 import { activeSessionIdAtom } from '@/atoms/tab-atoms'
-import { activeViewAtom, agentSkillsTabAtom } from '@/atoms/active-view'
+import { activeViewAtom, agentSkillsTabAtom, workspaceBoardTabAtom } from '@/atoms/active-view'
 import { settingsOpenAtom, settingsTabAtom } from '@/atoms/settings-tab'
 import { useOpenSession } from '@/hooks/useOpenSession'
 import { MarkdownRichEditor } from '@/components/diff/MarkdownRichEditor'
@@ -271,6 +271,7 @@ export function AutomationFormView(): React.ReactElement | null {
   const currentAgentWorkspaceId = useAtomValue(currentAgentWorkspaceIdAtom)
   const setActiveView = useSetAtom(activeViewAtom)
   const setAgentSkillsTab = useSetAtom(agentSkillsTabAtom)
+  const setWorkspaceBoardTab = useSetAtom(workspaceBoardTabAtom)
   const setSettingsOpen = useSetAtom(settingsOpenAtom)
   const setSettingsTab = useSetAtom(settingsTabAtom)
   const openSession = useOpenSession()
@@ -950,7 +951,8 @@ export function AutomationFormView(): React.ReactElement | null {
                   className="ml-auto text-xs underline underline-offset-2 hover:text-foreground transition-colors"
                   onClick={() => {
                     setAgentSkillsTab('mcp')
-                    setActiveView('agent-skills')
+                    setWorkspaceBoardTab('skills')
+                    setActiveView('workspace-board')
                   }}
                 >
                   前往 MCP 管理

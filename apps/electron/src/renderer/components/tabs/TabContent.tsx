@@ -14,7 +14,7 @@ import { AgentView } from '@/components/agent'
 import { PreviewTabContent } from '@/components/diff/PreviewTabContent'
 import { MarkdownRichEditor } from '@/components/diff/MarkdownRichEditor'
 import { MarkdownToc } from '@/components/diff/MarkdownToc'
-import { ScratchPadView } from '@/components/scratch-pad/ScratchPadView'
+import { WorkspaceBoardHubView } from '@/components/workspace-board/WorkspaceBoardHubView'
 import { TabErrorBoundary } from './TabErrorBoundary'
 
 export interface TabContentProps {
@@ -41,7 +41,7 @@ export function TabContent({ tabId }: TabContentProps): React.ReactElement {
   }
 
   if (tab.type === 'scratch') {
-    return <ScratchPadView />
+    return <WorkspaceBoardHubView />
   }
 
   if (tab.type === 'tutorial') {

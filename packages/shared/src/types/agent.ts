@@ -883,6 +883,94 @@ export interface WorkspaceMemorySummary {
   }
 }
 
+export type WorkspaceBoardItemStatus = 'active' | 'blocked' | 'done' | 'archived'
+export type WorkspaceBoardTodoStatus = 'pending' | 'in_progress' | 'blocked' | 'done' | 'cancelled'
+export type WorkspaceBoardCandidateKind = 'memory' | 'skill' | 'doc'
+export type WorkspaceBoardSourceKind = 'session' | 'file' | 'skill' | 'automation' | 'memory' | 'board'
+export type WorkspaceBoardRecommendationKind = 'follow_up' | 'create_automation' | 'create_skill' | 'promote_memory' | 'open_agent_session' | 'review_blocker'
+export type WorkspaceBoardRecommendationStatus = 'suggested' | 'accepted' | 'dismissed'
+export type WorkspaceBoardRecommendationSafetyLevel = 'read_only' | 'writes_board' | 'writes_memory' | 'runs_agent' | 'creates_automation'
+export type WorkspaceBoardAutomationLevel = 'manual' | 'suggest' | 'assistive'
+
+export interface WorkspaceBoardSourceRef {
+  type: WorkspaceBoardSourceKind
+  title?: string
+  id?: string
+  path?: string
+}
+
+export interface WorkspaceBoardBaseItem {
+  id: string
+  title: string
+  details?: string
+  source?: string
+  sourceRefs?: WorkspaceBoardSourceRef[]
+  createdAt: string
+  updatedAt: string
+}
+
+export interface WorkspaceBoardGoal extends WorkspaceBoardBaseItem {
+  status: WorkspaceBoardItemStatus
+}
+
+export interface WorkspaceBoardTodo extends WorkspaceBoardBaseItem {
+  status: WorkspaceBoardTodoStatus
+  owner?: 'user' | 'agent' | 'shared'
+}
+
+export interface WorkspaceBoardBlocker extends WorkspaceBoardBaseItem {
+  status: 'open' | 'resolved'
+}
+
+export interface WorkspaceBoardDecision extends WorkspaceBoardBaseItem {
+  status: 'proposed' | 'accepted' | 'rejected'
+}
+
+export interface WorkspaceBoardKnowledgeCandidate extends WorkspaceBoardBaseItem {
+  kind: WorkspaceBoardCandidateKind
+  status: 'candidate' | 'promoted' | 'dismissed'
+}
+
+export interface WorkspaceBoardRecommendation extends WorkspaceBoardBaseItem {
+  kind: WorkspaceBoardRecommendationKind
+  status: WorkspaceBoardRecommendationStatus
+  confidence?: number
+  actionLabel?: string
+  safetyLevel?: WorkspaceBoardRecommendationSafetyLevel
+}
+
+export interface WorkspaceBoardAutomationRef extends WorkspaceBoardBaseItem {
+  automationId?: string
+  status: 'linked' | 'suggested' | 'archived'
+  trigger?: string
+}
+
+export interface WorkspaceBoardSkillRef extends WorkspaceBoardBaseItem {
+  skillSlug?: string
+  status: 'enabled' | 'disabled' | 'suggested' | 'archived'
+}
+
+export interface WorkspaceBoardNote extends WorkspaceBoardBaseItem {
+  kind: 'note' | 'legacy_scratch_pad' | 'handoff'
+}
+
+export interface WorkspaceBoard {
+  schemaVersion: 1
+  title: string
+  summary?: string
+  automationLevel?: WorkspaceBoardAutomationLevel
+  updatedAt: string
+  goals: WorkspaceBoardGoal[]
+  todos: WorkspaceBoardTodo[]
+  blockers: WorkspaceBoardBlocker[]
+  decisions: WorkspaceBoardDecision[]
+  recommendations: WorkspaceBoardRecommendation[]
+  automationRefs: WorkspaceBoardAutomationRef[]
+  skillRefs: WorkspaceBoardSkillRef[]
+  knowledgeCandidates: WorkspaceBoardKnowledgeCandidate[]
+  notes: WorkspaceBoardNote[]
+}
+
 /** 工作区能力摘要（MCP + Skill 计数） */
 export interface WorkspaceCapabilities {
   mcpServers: Array<{ name: string; enabled: boolean; type: McpTransportType }>
@@ -1468,6 +1556,10 @@ export const AGENT_IPC_CHANNELS = {
   READ_WORKSPACE_AUTO_MEMORY_FILE: 'agent:read-workspace-auto-memory-file',
   /** 写入工作区 auto memory 文件 */
   WRITE_WORKSPACE_AUTO_MEMORY_FILE: 'agent:write-workspace-auto-memory-file',
+  /** 读取工作区协作台文件 */
+  READ_WORKSPACE_BOARD: 'agent:read-workspace-board',
+  /** 写入工作区协作台文件 */
+  WRITE_WORKSPACE_BOARD: 'agent:write-workspace-board',
 
   // 流式事件（主进程 → 渲染进程推送）
   /** Agent 流式事件 */

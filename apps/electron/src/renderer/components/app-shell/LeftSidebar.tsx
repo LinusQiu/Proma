@@ -11,13 +11,13 @@
 import * as React from 'react'
 import { useAtom, useSetAtom, useAtomValue, useStore } from 'jotai'
 import { toast } from 'sonner'
-import { Pin, PinOff, Settings, Plus, Trash2, Pencil, PanelLeftClose, PanelLeftOpen, ArrowRightLeft, Search, Archive, ArchiveRestore, ArrowLeft, Bot, MessageSquare, MoreHorizontal, FolderOpen, GripVertical, Clock, AlarmClock, ChevronRight, Blocks, GitBranch, Download, Loader2, RotateCw } from 'lucide-react'
+import { Pin, PinOff, Settings, Plus, Trash2, Pencil, PanelLeftClose, PanelLeftOpen, ArrowRightLeft, Search, Archive, ArchiveRestore, ArrowLeft, Bot, MessageSquare, MoreHorizontal, FolderOpen, GripVertical, Clock, AlarmClock, ChevronRight, Blocks, GitBranch, Download, Loader2, RotateCw, LayoutDashboard } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { Tooltip, TooltipTrigger, TooltipContent } from '@/components/ui/tooltip'
 import { ModeSwitcher } from './ModeSwitcher'
 import { SearchDialog } from './SearchDialog'
 import { UserAvatar } from '@/components/chat/UserAvatar'
-import { activeViewAtom, agentSkillsTabAtom } from '@/atoms/active-view'
+import { activeViewAtom, agentSkillsTabAtom, workspaceBoardTabAtom } from '@/atoms/active-view'
 import { automationFormAtom, automationsAtom } from '@/atoms/automation-atoms'
 import { appModeAtom, type AppMode } from '@/atoms/app-mode'
 import { settingsOpenAtom, settingsTabAtom } from '@/atoms/settings-tab'
@@ -204,6 +204,55 @@ function SidebarUpdateButton({
       </TooltipTrigger>
       <TooltipContent side={tooltipSide}>{label}</TooltipContent>
     </Tooltip>
+  )
+}
+
+interface WorkspaceBoardSidebarEntryProps {
+  automationCount: number
+  skillUpdateCount: number
+  active: boolean
+  onClick: () => void
+}
+
+function WorkspaceBoardSidebarEntry({
+  automationCount,
+  skillUpdateCount,
+  active,
+  onClick,
+}: WorkspaceBoardSidebarEntryProps): React.ReactElement {
+  const badgeCount = automationCount + skillUpdateCount
+
+  return (
+    <button
+      type="button"
+      aria-label={`协作台，${automationCount} 个自动任务${skillUpdateCount > 0 ? `，${skillUpdateCount} 个技能可更新` : ''}`}
+      onClick={onClick}
+      className={cn(
+        'group w-full flex items-center justify-between px-3 py-2 rounded-md text-[13px] transition-colors duration-100 titlebar-no-drag',
+        active
+          ? 'bg-accent-foreground/[0.10] text-foreground shadow-[0_1px_2px_0_rgba(0,0,0,0.05)]'
+          : 'text-foreground/60 hover:bg-accent-foreground/[0.08] hover:text-foreground',
+      )}
+    >
+      <span className="flex min-w-0 items-center gap-3">
+        <span className={cn('flex-shrink-0 w-[18px] h-[18px]', active ? 'text-accent-foreground' : 'text-foreground/45')}>
+          <LayoutDashboard size={16} className="block" />
+        </span>
+        <span className="truncate">协作台</span>
+      </span>
+      {badgeCount > 0 && (
+        <span
+          className={cn(
+            'ml-2 flex h-5 min-w-[22px] flex-shrink-0 items-center justify-center rounded-full px-1.5 text-[11px] font-medium tabular-nums',
+            active
+              ? 'bg-accent-foreground/[0.26] text-primary-foreground'
+              : 'bg-foreground/[0.045] text-foreground/[0.42] group-hover:text-foreground/65',
+          )}
+        >
+          {formatAutomationCount(badgeCount)}
+        </span>
+      )}
+    </button>
   )
 }
 
@@ -603,6 +652,7 @@ function deleteSetEntry<T>(prev: Set<T>, value: T): Set<T> {
 export function LeftSidebar({ width }: LeftSidebarProps): React.ReactElement {
   const [activeView, setActiveView] = useAtom(activeViewAtom)
   const setAgentSkillsTab = useSetAtom(agentSkillsTabAtom)
+  const setWorkspaceBoardTab = useSetAtom(workspaceBoardTabAtom)
   const setAutomationForm = useSetAtom(automationFormAtom)
   const automations = useAtomValue(automationsAtom)
   const setAutomations = useSetAtom(automationsAtom)
@@ -899,10 +949,24 @@ export function LeftSidebar({ width }: LeftSidebarProps): React.ReactElement {
     return () => window.removeEventListener('focus', handleFocus)
   }, [setConversations, setAgentSessions])
 
-  /** 打开/关闭自动任务列表 */
+  /** 打开/关闭协作台 */
+  const handleOpenWorkspaceBoard = React.useCallback((): void => {
+    if (activeView === 'workspace-board') {
+      if (store.get(automationFormAtom).open) {
+        setAutomationForm({ open: false, draft: null })
+        return
+      }
+      setActiveView('conversations')
+      return
+    }
+    setWorkspaceBoardTab('overview')
+    setAutomationForm({ open: false, draft: null })
+    setActiveView('workspace-board')
+  }, [activeView, setAutomationForm, setActiveView, setWorkspaceBoardTab, store])
+
+  /** 打开/关闭自动任务列表，保留旧入口行为 */
   const handleOpenAutomations = React.useCallback((): void => {
     if (activeView === 'automations') {
-      // 编辑页 → 关表单回列表；列表页 → 退出到对话
       if (store.get(automationFormAtom).open) {
         setAutomationForm({ open: false, draft: null })
         return
@@ -914,7 +978,7 @@ export function LeftSidebar({ width }: LeftSidebarProps): React.ReactElement {
     setActiveView('automations')
   }, [activeView, setAutomationForm, setActiveView, store])
 
-  /** 打开/关闭 Agent 技能视图 */
+  /** 打开/关闭 Agent 技能视图，保留旧入口行为 */
   const handleOpenSkills = React.useCallback((): void => {
     if (activeView === 'agent-skills') {
       setActiveView('conversations')
@@ -926,8 +990,9 @@ export function LeftSidebar({ width }: LeftSidebarProps): React.ReactElement {
   /** 打开当前工作区的 MCP 管理页 */
   const handleOpenMcpManagement = React.useCallback((): void => {
     setAgentSkillsTab('mcp')
-    setActiveView('agent-skills')
-  }, [setAgentSkillsTab, setActiveView])
+    setWorkspaceBoardTab('skills')
+    setActiveView('workspace-board')
+  }, [setAgentSkillsTab, setActiveView, setWorkspaceBoardTab])
 
   // 切换模式时重置归档视图
   React.useEffect(() => {
@@ -2070,6 +2135,39 @@ export function LeftSidebar({ width }: LeftSidebarProps): React.ReactElement {
             <TooltipTrigger asChild>
               <button
                 type="button"
+                aria-label="协作台"
+                onClick={handleOpenWorkspaceBoard}
+                className={cn(
+                  'relative size-10 flex items-center justify-center rounded-[12px] transition-colors titlebar-no-drag border',
+                  activeView === 'workspace-board'
+                    ? 'border-primary/80 bg-primary text-primary-foreground shadow-sm'
+                    : 'border-border/45 bg-foreground/[0.025] text-foreground/45 hover:border-border/70 hover:bg-foreground/[0.045] hover:text-primary',
+                )}
+              >
+                <LayoutDashboard size={16} />
+                {(automationCount + (capabilities?.skills.filter((s) => s.hasUpdate).length ?? 0)) > 0 && (
+                  <span
+                    className={cn(
+                      'absolute -top-1 -right-1 flex h-4 min-w-[16px] items-center justify-center rounded-full px-1 text-[10px] font-medium tabular-nums',
+                      activeView === 'workspace-board'
+                        ? 'bg-primary-foreground text-primary'
+                        : 'bg-primary text-primary-foreground',
+                    )}
+                  >
+                    {formatAutomationCount(automationCount + (capabilities?.skills.filter((s) => s.hasUpdate).length ?? 0))}
+                  </span>
+                )}
+              </button>
+            </TooltipTrigger>
+            <TooltipContent side="right">
+              协作台
+            </TooltipContent>
+          </Tooltip>
+
+          <Tooltip>
+            <TooltipTrigger asChild>
+              <button
+                type="button"
                 aria-label={`自动任务，${automationCount} 个任务已创建`}
                 onClick={handleOpenAutomations}
                 className={cn(
@@ -2242,8 +2340,18 @@ export function LeftSidebar({ width }: LeftSidebarProps): React.ReactElement {
         </Tooltip>
       </div>
 
-      {/* 自动任务入口：作为任务中心入口放在置顶区上方，不参与置顶列表层级。 */}
+      {/* 协作台入口：聚合工作区状态、自动任务和 Agent 技能。 */}
       <div className="px-3 pt-2 pb-0.5">
+        <WorkspaceBoardSidebarEntry
+          automationCount={automationCount}
+          skillUpdateCount={capabilities?.skills.filter((s) => s.hasUpdate).length ?? 0}
+          active={activeView === 'workspace-board'}
+          onClick={handleOpenWorkspaceBoard}
+        />
+      </div>
+
+      {/* 自动任务入口：保留旧入口，避免习惯用户找不到。 */}
+      <div className="px-3 pb-0.5">
         <AutomationSidebarEntry
           count={automationCount}
           active={activeView === 'automations'}
@@ -2251,7 +2359,7 @@ export function LeftSidebar({ width }: LeftSidebarProps): React.ReactElement {
         />
       </div>
 
-      {/* Agent 技能入口：Skills / MCP 能力中心，仅 Agent 模式可见 */}
+      {/* Agent 技能入口：Skills / MCP 能力中心，保留旧入口。 */}
       {mode === 'agent' && (
         <div className="px-3 pb-0.5">
           <SkillsSidebarEntry

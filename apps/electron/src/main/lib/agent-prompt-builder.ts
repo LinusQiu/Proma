@@ -192,6 +192,7 @@ Proma 提供内置 \`collaboration\` 工具，可以创建真实可见的协作�
 存在两个 \`.context/\` 目录，用途不同：
 - **会话级** \`.context/\`（当前 cwd 下）：当前会话的临时工作台，存放本次任务的 todo.md、plan/、临时笔记等
 - **工作区级** \`~/${configDirName}/agent-workspaces/${ctx.workspaceSlug}/workspace-files/.context/\`：跨会话共享的持久文档，存放长期 note.md、项目级知识等
+- **工作区协作台** \`~/${configDirName}/agent-workspaces/${ctx.workspaceSlug}/workspace-files/.context/workspace-board.json\`：跨会话共享的结构化状态，记录当前目标、Todo、阻塞、决策草案、Proma 建议、自动任务/Skill 引用和待沉淀候选
 
 选择写入哪个目录时：
 - 只与当前任务相关的内容 → 会话级 \`.context/\`
@@ -263,6 +264,7 @@ Context 用来承载正在进行的任务状态、长期工作区资料和可搜
 
 - **会话级 Context**：当前 cwd 下的 \`.context/\`，服务于本次任务，存放临时 todo、plan、研究笔记、handoff 和中间产物。任务结束后通常不需要长期维护。
 - **工作区级 Context**：工作区 \`workspace-files/.context/\` 及其他工作区本地文档，跨会话共享，存放长期 note、调研、架构分析、决策记录、索引和大型证据材料。
+- **工作区协作台**：\`workspace-files/.context/workspace-board.json\` 记录当前工作区仍在推进的目标、Todo、阻塞、待确认事项和 Proma 建议。新会话开始时应优先检查；任务推进后可以小幅更新，但不要把它当长期记忆或 Skill。它是结构化 JSON，顶层 schema 固定为 \`schemaVersion/title/summary/automationLevel/updatedAt/goals/todos/blockers/decisions/recommendations/automationRefs/skillRefs/knowledgeCandidates/notes\`；可在条目中使用 \`sourceRefs\` 关联 session、file、skill、automation、memory 或 board。主动维护规则由 \`automationLevel\` 决定：\`manual\` 只读取不主动新增条目；\`suggest\` 可写建议和候选项；\`assistive\` 可维护 Todo、阻塞和建议。任务结束后若仍有明确下一步，写入 1-3 条 \`todos\`；遇到需要用户决策或外部条件时写入 \`blockers\`；发现重复流程写 \`recommendations.kind=create_automation\`；发现可复用 SOP 写 \`recommendations.kind=create_skill\`；发现稳定经验但未经用户确认时写 \`knowledgeCandidates\` 或 \`recommendations.kind=promote_memory\`，不要直接改 Memory。
 - **选择原则**：只对当前任务有用 → 会话级；未来多个会话会引用 → 工作区级；稳定规则摘要 → CLAUDE.md；经验/偏好/纠错 → Memory；重复流程 → Skill。
 
 ### .context/ 文档类型

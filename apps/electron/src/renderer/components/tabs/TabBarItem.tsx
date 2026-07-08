@@ -9,7 +9,7 @@
 import * as React from 'react'
 import { createPortal } from 'react-dom'
 import { useAtomValue } from 'jotai'
-import { FileText, StickyNote, X, Clock, GitBranch } from 'lucide-react'
+import { FileText, LayoutDashboard, X, Clock, GitBranch } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import type { TabType, TabMinimapItem } from '@/atoms/tab-atoms'
 import type { SessionIndicatorStatus } from '@/atoms/agent-atoms'
@@ -88,7 +88,7 @@ export function TabBarItem({
   }, [])
 
   const handleMouseDown = (e: React.MouseEvent): void => {
-    // Scratch Pad 不可中键关闭
+    // 协作台不可中键关闭
     if (type === 'scratch') return
     if (e.button === 1) {
       e.preventDefault()
@@ -107,7 +107,7 @@ export function TabBarItem({
   // 当前 active Tab 不显示预览面板
   const showPreview = isHovered && !isActive
 
-  // Scratch Pad 是固定草稿入口
+  // 协作台是固定入口
   if (isScratch) {
     return (
       <div
@@ -135,8 +135,8 @@ export function TabBarItem({
           onMouseDown={handleMouseDown}
           onPointerDown={onDragStart}
         >
-          <StickyNote className="size-3.5" />
-          <span className="truncate">草稿</span>
+          <LayoutDashboard className="size-3.5" />
+          <span className="truncate">协作台</span>
         </button>
       </div>
     )

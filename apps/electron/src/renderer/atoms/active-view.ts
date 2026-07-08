@@ -3,17 +3,22 @@
  *
  * 控制 MainArea 显示的内容：
  * - conversations: 对话视图（Chat/Agent 模式内容）
+ * - workspace-board: 协作台中控视图
  * - automations: 定时任务列表视图
  * - agent-skills: Agent 技能（Skills/MCP）全屏管理视图
  */
 
 import { atom } from 'jotai'
 
-export type ActiveView = 'conversations' | 'automations' | 'agent-skills'
+export type ActiveView = 'conversations' | 'workspace-board' | 'automations' | 'agent-skills'
+export type WorkspaceBoardTab = 'overview' | 'automations' | 'skills' | 'notes'
 export type AgentSkillsCapabilityTab = 'skills' | 'mcp' | 'memory'
 
 /** 当前活跃视图（不持久化，每次启动默认显示对话） */
 export const activeViewAtom = atom<ActiveView>('conversations')
+
+/** 协作台当前子页 */
+export const workspaceBoardTabAtom = atom<WorkspaceBoardTab>('overview')
 
 /** Agent 技能视图当前子页，用于外部入口直达 MCP 管理 */
 export const agentSkillsTabAtom = atom<AgentSkillsCapabilityTab>('skills')

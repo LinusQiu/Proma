@@ -19,6 +19,7 @@ import { TabContent } from './TabContent'
 import { AutomationFormView } from '@/components/automation/AutomationFormView'
 import { AutomationsListView } from '@/components/automation/AutomationsListView'
 import { AgentSkillsView } from '@/components/agent-skills/AgentSkillsView'
+import { WorkspaceBoardHubView } from '@/components/workspace-board/WorkspaceBoardHubView'
 import { automationFormAtom } from '@/atoms/automation-atoms'
 import { activeViewAtom } from '@/atoms/active-view'
 import { interfaceVariantAtom } from '@/atoms/theme'
@@ -157,7 +158,9 @@ export function MainArea(): React.ReactElement {
             className="flex flex-col min-w-0 h-full relative"
             style={leftFlexStyle}
           >
-            {activeView === 'automations' ? (
+            {activeView === 'workspace-board' ? (
+              <WorkspaceBoardHubView />
+            ) : activeView === 'automations' ? (
               automationFormOpen ? (
                 // 定时任务设置页：与列表同层级替换中间区，不经过 TabBar，避免切换时闪出会话 Tab。
                 <AutomationFormView />

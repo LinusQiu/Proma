@@ -1,7 +1,7 @@
 /**
  * Tab Atoms — 当前工作区入口状态管理
  *
- * 顶部只保留 Scratch Pad 与当前会话两个入口；会话恢复与导航交给左侧列表。
+ * 顶部只保留协作台与当前会话两个入口；会话恢复与导航交给左侧列表。
  * 通过桥接 atom 与现有 currentConversationIdAtom / currentAgentSessionIdAtom 同步，
  * 确保所有现有派生 atoms 无需修改。
  */
@@ -24,7 +24,7 @@ import type { PreviewFile } from './preview-atoms'
 /** 标签页类型（Settings 不作为 Tab，保留独立视图） */
 export type TabType = 'chat' | 'agent' | 'scratch' | 'preview' | 'tutorial'
 
-/** Scratch Pad 专用的固定 sessionId */
+/** 协作台专用的固定 sessionId（沿用旧 ID，兼容已持久化的 Tab 状态） */
 export const SCRATCH_PAD_ID = '__scratch-pad__'
 
 /** 教程 Tab 固定 ID */
@@ -34,8 +34,8 @@ export const TUTORIAL_TAB_TITLE = 'Proma 使用教程'
 /** 会话预览 Tab 的 ID 前缀：运行时临时入口，不参与持久化 */
 const PREVIEW_TAB_PREFIX = '__preview__:'
 
-/** Scratch Pad 标签默认标题 */
-export const SCRATCH_PAD_TITLE = 'Scratch Pad'
+/** 协作台标签默认标题 */
+export const SCRATCH_PAD_TITLE = '协作台'
 
 /** 标签页数据 */
 export interface TabItem {
@@ -81,7 +81,7 @@ export interface OpenTabRestore {
 
 // ===== 核心 Atoms =====
 
-/** 顶部入口列表：Scratch Pad + 当前会话 */
+/** 顶部入口列表：协作台 + 当前会话 */
 export const tabsAtom = atom<TabItem[]>([])
 
 /** 当前激活的标签 ID */
@@ -113,9 +113,9 @@ export interface TabMinimapItem {
 }
 export const tabMinimapCacheAtom = atom<Map<string, TabMinimapItem[]>>(new Map())
 
-/** Scratch Pad 编辑内容（HTML 字符串，供 TipTap 编辑器使用） */
+/** 旧 Scratch Pad 编辑内容（HTML 字符串，仅用于迁移到协作台） */
 export const scratchPadContentAtom = atom<string>('')
-/** Scratch Pad 内容是否已从磁盘加载 */
+/** 旧 Scratch Pad 内容是否已从磁盘加载 */
 export const scratchPadLoadedAtom = atom<boolean>(false)
 
 // ===== 派生 Atoms =====

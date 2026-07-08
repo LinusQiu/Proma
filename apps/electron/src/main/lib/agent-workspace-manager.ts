@@ -19,12 +19,13 @@ import {
   getInactiveSkillsDir,
   getDefaultSkillsDir,
   parseSkillVersion,
+  getWorkspaceFilesDir,
 } from './config-paths'
 import { findAllGitRoots, normalizeGitRoot } from './git-diff-service'
 import { listBuiltinMcpServers } from './builtin-mcp/catalog'
 import { RESERVED_BUILTIN_KEYS } from './builtin-mcp/baseline'
 import { inferMcpTransportType, normalizeMcpTransportType } from '@proma/shared'
-import type { AgentWorkspace, WorkspaceMcpConfig, SkillMeta, SkillImportSource, OtherWorkspaceSkillsGroup, WorkspaceCapabilities, SkillFileNode, SkillFileContent, WorkspaceMemorySummary } from '@proma/shared'
+import type { AgentWorkspace, WorkspaceMcpConfig, SkillMeta, SkillImportSource, OtherWorkspaceSkillsGroup, WorkspaceCapabilities, SkillFileNode, SkillFileContent, WorkspaceMemorySummary, WorkspaceBoard, WorkspaceBoardAutomationRef, WorkspaceBoardBlocker, WorkspaceBoardDecision, WorkspaceBoardGoal, WorkspaceBoardKnowledgeCandidate, WorkspaceBoardNote, WorkspaceBoardRecommendation, WorkspaceBoardSkillRef, WorkspaceBoardSourceRef, WorkspaceBoardTodo } from '@proma/shared'
 
 interface AgentWorkspacesIndex {
   version: number
@@ -906,6 +907,8 @@ const SKILL_TREE_MAX_DEPTH = 8
 const WORKSPACE_CLAUDE_MD = 'CLAUDE.md'
 const AUTO_MEMORY_DIR = '.claude/memory'
 const AUTO_MEMORY_INDEX = 'MEMORY.md'
+const WORKSPACE_BOARD_RELATIVE_PATH = '.context/workspace-board.json'
+const LEGACY_WORKSPACE_BOARD_RELATIVE_PATH = '.context/workspace-board.md'
 
 function fileSummary(absPath: string): WorkspaceMemorySummary['claudeMd'] {
   if (!existsSync(absPath)) {
@@ -926,6 +929,14 @@ export function getWorkspaceClaudeMdPath(workspaceSlug: string): string {
 
 function getWorkspaceAutoMemoryPath(workspaceSlug: string): string {
   return join(getAgentWorkspacePath(workspaceSlug), AUTO_MEMORY_DIR)
+}
+
+export function getWorkspaceBoardPath(workspaceSlug: string): string {
+  return join(getWorkspaceFilesDir(workspaceSlug), WORKSPACE_BOARD_RELATIVE_PATH)
+}
+
+function getLegacyWorkspaceBoardPath(workspaceSlug: string): string {
+  return join(getWorkspaceFilesDir(workspaceSlug), LEGACY_WORKSPACE_BOARD_RELATIVE_PATH)
 }
 
 export function getWorkspaceAutoMemoryDir(workspaceSlug: string): string {
@@ -1131,6 +1142,275 @@ export function writeWorkspaceAutoMemoryFile(workspaceSlug: string, relativePath
   }
   writeFileSync(abs, content, 'utf-8')
   console.log(`[Agent 工作区] 已更新 auto memory 文件: ${workspaceSlug}/${relativePath}`)
+}
+
+function createWorkspaceBoardId(prefix: string): string {
+  return `${prefix}-${Date.now()}-${randomUUID().slice(0, 8)}`
+}
+
+function nowIso(): string {
+  return new Date().toISOString()
+}
+
+function asRecord(value: unknown): Record<string, unknown> {
+  return value && typeof value === 'object' && !Array.isArray(value) ? value as Record<string, unknown> : {}
+}
+
+function asString(value: unknown, fallback = ''): string {
+  return typeof value === 'string' ? value : fallback
+}
+
+function normalizeBoardSourceRefs(value: unknown): WorkspaceBoardSourceRef[] | undefined {
+  if (!Array.isArray(value)) return undefined
+  const refs = value
+    .map((entry): WorkspaceBoardSourceRef | null => {
+      const ref = asRecord(entry)
+      const type = ref.type === 'session' ||
+        ref.type === 'file' ||
+        ref.type === 'skill' ||
+        ref.type === 'automation' ||
+        ref.type === 'memory' ||
+        ref.type === 'board'
+        ? ref.type
+        : null
+      if (!type) return null
+      return {
+        type,
+        title: asString(ref.title) || undefined,
+        id: asString(ref.id) || undefined,
+        path: asString(ref.path) || undefined,
+      }
+    })
+    .filter((ref): ref is WorkspaceBoardSourceRef => ref !== null)
+  return refs.length > 0 ? refs : undefined
+}
+
+function normalizeBoardBaseItem<TStatus extends string>(
+  value: unknown,
+  fallbackPrefix: string,
+  allowedStatuses: readonly TStatus[],
+  fallbackStatus: TStatus,
+): { id: string; title: string; details?: string; source?: string; sourceRefs?: WorkspaceBoardSourceRef[]; status: TStatus; createdAt: string; updatedAt: string } | null {
+  const item = asRecord(value)
+  const title = asString(item.title).trim()
+  if (!title) return null
+  const status = allowedStatuses.includes(item.status as TStatus) ? item.status as TStatus : fallbackStatus
+  const createdAt = asString(item.createdAt, nowIso())
+  return {
+    id: asString(item.id, createWorkspaceBoardId(fallbackPrefix)),
+    title,
+    details: asString(item.details) || undefined,
+    source: asString(item.source) || undefined,
+    sourceRefs: normalizeBoardSourceRefs(item.sourceRefs),
+    status,
+    createdAt,
+    updatedAt: asString(item.updatedAt, createdAt),
+  }
+}
+
+function normalizeBoardArray<T>(value: unknown, mapper: (entry: unknown) => T | null): T[] {
+  if (!Array.isArray(value)) return []
+  return value.map(mapper).filter((entry): entry is T => entry !== null)
+}
+
+function normalizeWorkspaceBoard(input: unknown): WorkspaceBoard {
+  const board = asRecord(input)
+  const updatedAt = asString(board.updatedAt, nowIso())
+  const automationLevel = board.automationLevel === 'manual' ||
+    board.automationLevel === 'assistive'
+    ? board.automationLevel
+    : 'suggest'
+  const goals = normalizeBoardArray<WorkspaceBoardGoal>(board.goals, (entry) =>
+    normalizeBoardBaseItem(entry, 'goal', ['active', 'blocked', 'done', 'archived'] as const, 'active')
+  )
+  const todos = normalizeBoardArray<WorkspaceBoardTodo>(board.todos, (entry) => {
+    const item = normalizeBoardBaseItem(entry, 'todo', ['pending', 'in_progress', 'blocked', 'done', 'cancelled'] as const, 'pending')
+    if (!item) return null
+    const raw = asRecord(entry)
+    const owner = raw.owner === 'user' || raw.owner === 'agent' || raw.owner === 'shared' ? raw.owner : undefined
+    return { ...item, owner }
+  })
+  const blockers = normalizeBoardArray<WorkspaceBoardBlocker>(board.blockers, (entry) =>
+    normalizeBoardBaseItem(entry, 'blocker', ['open', 'resolved'] as const, 'open')
+  )
+  const decisions = normalizeBoardArray<WorkspaceBoardDecision>(board.decisions, (entry) =>
+    normalizeBoardBaseItem(entry, 'decision', ['proposed', 'accepted', 'rejected'] as const, 'proposed')
+  )
+  const recommendations = normalizeBoardArray<WorkspaceBoardRecommendation>(board.recommendations, (entry) => {
+    const item = normalizeBoardBaseItem(entry, 'recommendation', ['suggested', 'accepted', 'dismissed'] as const, 'suggested')
+    if (!item) return null
+    const raw = asRecord(entry)
+    const kind = raw.kind === 'create_automation' ||
+      raw.kind === 'create_skill' ||
+      raw.kind === 'promote_memory' ||
+      raw.kind === 'open_agent_session' ||
+      raw.kind === 'review_blocker'
+      ? raw.kind
+      : 'follow_up'
+    const confidence = typeof raw.confidence === 'number' && Number.isFinite(raw.confidence)
+      ? Math.min(1, Math.max(0, raw.confidence))
+      : undefined
+    const safetyLevel = raw.safetyLevel === 'read_only' ||
+      raw.safetyLevel === 'writes_board' ||
+      raw.safetyLevel === 'writes_memory' ||
+      raw.safetyLevel === 'runs_agent' ||
+      raw.safetyLevel === 'creates_automation'
+      ? raw.safetyLevel
+      : undefined
+    return {
+      ...item,
+      kind,
+      confidence,
+      actionLabel: asString(raw.actionLabel) || undefined,
+      safetyLevel,
+    }
+  })
+  const automationRefs = normalizeBoardArray<WorkspaceBoardAutomationRef>(board.automationRefs, (entry) => {
+    const item = normalizeBoardBaseItem(entry, 'automation-ref', ['linked', 'suggested', 'archived'] as const, 'linked')
+    if (!item) return null
+    const raw = asRecord(entry)
+    return {
+      ...item,
+      automationId: asString(raw.automationId) || undefined,
+      trigger: asString(raw.trigger) || undefined,
+    }
+  })
+  const skillRefs = normalizeBoardArray<WorkspaceBoardSkillRef>(board.skillRefs, (entry) => {
+    const item = normalizeBoardBaseItem(entry, 'skill-ref', ['enabled', 'disabled', 'suggested', 'archived'] as const, 'enabled')
+    if (!item) return null
+    const raw = asRecord(entry)
+    return {
+      ...item,
+      skillSlug: asString(raw.skillSlug) || undefined,
+    }
+  })
+  const knowledgeCandidates = normalizeBoardArray<WorkspaceBoardKnowledgeCandidate>(board.knowledgeCandidates, (entry) => {
+    const item = normalizeBoardBaseItem(entry, 'candidate', ['candidate', 'promoted', 'dismissed'] as const, 'candidate')
+    if (!item) return null
+    const raw = asRecord(entry)
+    const kind = raw.kind === 'skill' || raw.kind === 'doc' || raw.kind === 'memory' ? raw.kind : 'memory'
+    return { ...item, kind }
+  })
+  const notes = normalizeBoardArray<WorkspaceBoardNote>(board.notes, (entry) => {
+    const item = normalizeBoardBaseItem(entry, 'note', ['active'] as const, 'active')
+    if (!item) return null
+    const raw = asRecord(entry)
+    const kind = raw.kind === 'legacy_scratch_pad' || raw.kind === 'handoff' || raw.kind === 'note' ? raw.kind : 'note'
+    const { status: _status, ...base } = item
+    return { ...base, kind }
+  })
+
+  return {
+    schemaVersion: 1,
+    title: asString(board.title, '协作台'),
+    summary: asString(board.summary) || undefined,
+    automationLevel,
+    updatedAt,
+    goals,
+    todos,
+    blockers,
+    decisions,
+    recommendations,
+    automationRefs,
+    skillRefs,
+    knowledgeCandidates,
+    notes,
+  }
+}
+
+function createEmptyWorkspaceBoard(): WorkspaceBoard {
+  return normalizeWorkspaceBoard({
+    title: '协作台',
+    summary: '维护当前工作区正在推进的目标、Todo、阻塞、决策草案和待沉淀候选。',
+    updatedAt: nowIso(),
+  })
+}
+
+function createWorkspaceBoardFromLegacyMarkdown(markdown: string): WorkspaceBoard {
+  const timestamp = nowIso()
+  const todos = markdown
+    .split(/\r?\n/)
+    .map((line) => line.match(/^\s*[-*]\s+\[([ xX])]\s+(.+?)\s*$/))
+    .filter((match): match is RegExpMatchArray => match !== null)
+    .map((match): WorkspaceBoardTodo => ({
+      id: createWorkspaceBoardId('legacy-todo'),
+      title: match[2] ?? '旧协作台 Todo',
+      status: match[1]?.toLowerCase() === 'x' ? 'done' : 'pending',
+      owner: 'shared',
+      source: LEGACY_WORKSPACE_BOARD_RELATIVE_PATH,
+      createdAt: timestamp,
+      updatedAt: timestamp,
+    }))
+
+  return normalizeWorkspaceBoard({
+    title: '协作台',
+    summary: '已从旧 Markdown 协作台迁移内容，请按结构化字段继续整理。',
+    updatedAt: timestamp,
+    todos,
+    recommendations: markdown.trim().length > 0 ? [{
+      id: createWorkspaceBoardId('legacy-recommendation'),
+      kind: 'follow_up',
+      title: '检查旧协作台迁移内容',
+      details: '旧 Markdown 内容已迁移到工作笔记；建议确认 Todo、目标和决策是否需要拆分到对应区域。',
+      status: 'suggested',
+      confidence: 0.8,
+      actionLabel: '整理迁移内容',
+      safetyLevel: 'writes_board',
+      sourceRefs: [{ type: 'file', path: LEGACY_WORKSPACE_BOARD_RELATIVE_PATH, title: '旧协作台' }],
+      createdAt: timestamp,
+      updatedAt: timestamp,
+    }] : [],
+    notes: markdown.trim().length > 0 ? [{
+      id: createWorkspaceBoardId('legacy-note'),
+      kind: 'note',
+      title: '旧 Markdown 协作台迁移',
+      details: markdown.trim(),
+      source: LEGACY_WORKSPACE_BOARD_RELATIVE_PATH,
+      createdAt: timestamp,
+      updatedAt: timestamp,
+    }] : [],
+  })
+}
+
+export function readWorkspaceBoard(workspaceSlug: string): WorkspaceBoard {
+  const abs = getWorkspaceBoardPath(workspaceSlug)
+  if (!existsSync(abs)) {
+    const legacyAbs = getLegacyWorkspaceBoardPath(workspaceSlug)
+    if (existsSync(legacyAbs)) {
+      const st = statSync(legacyAbs)
+      if (st.isFile() && st.size <= SKILL_FILE_SIZE_LIMIT) {
+        return createWorkspaceBoardFromLegacyMarkdown(readFileSync(legacyAbs, 'utf-8'))
+      }
+    }
+    return createEmptyWorkspaceBoard()
+  }
+
+  const st = statSync(abs)
+  if (!st.isFile()) throw new Error(`${WORKSPACE_BOARD_RELATIVE_PATH} 不是文件`)
+  if (st.size > SKILL_FILE_SIZE_LIMIT) {
+    throw new Error(`文件过大（${(st.size / 1024 / 1024).toFixed(2)} MB），超过 10 MB 限制`)
+  }
+
+  const raw = readFileSync(abs, 'utf-8')
+  return normalizeWorkspaceBoard(JSON.parse(raw))
+}
+
+export function writeWorkspaceBoard(workspaceSlug: string, board: WorkspaceBoard): WorkspaceBoard {
+  const normalized = normalizeWorkspaceBoard({ ...board, updatedAt: nowIso() })
+  const content = `${JSON.stringify(normalized, null, 2)}\n`
+  const byteLen = Buffer.byteLength(content, 'utf-8')
+  if (byteLen > SKILL_FILE_SIZE_LIMIT) {
+    throw new Error(`内容过大（${(byteLen / 1024 / 1024).toFixed(2)} MB），超过 10 MB 限制`)
+  }
+
+  const abs = getWorkspaceBoardPath(workspaceSlug)
+  const parent = dirname(abs)
+  if (!existsSync(parent)) {
+    mkdirSync(parent, { recursive: true })
+  }
+  writeFileSync(abs, content, 'utf-8')
+  console.log(`[Agent 工作区] 已更新协作台: ${workspaceSlug}/${WORKSPACE_BOARD_RELATIVE_PATH}`)
+  return normalized
 }
 
 /** 把相对路径限制在 Skill 根目录内，并拒绝直接覆盖 SKILL.md */
