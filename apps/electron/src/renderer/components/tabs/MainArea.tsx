@@ -7,7 +7,7 @@
  */
 
 import * as React from 'react'
-import { useAtomValue, useSetAtom, useAtom } from 'jotai'
+import { useAtomValue, useSetAtom, useAtom, useStore } from 'jotai'
 import {
   tabsAtom,
   activeTabIdAtom,
@@ -20,6 +20,7 @@ import { WelcomeView } from '@/components/welcome/WelcomeView'
 import { previewPanelOpenMapAtom, previewSplitRatioAtom } from '@/atoms/preview-atoms'
 import { PreviewPanel } from '@/components/diff/PreviewPanel'
 import { ScratchPadPane } from '@/components/scratch-pad/ScratchPadView'
+import { closeScratchInSplit } from '@/components/scratch-pad/scratch-pad-opener'
 import { useTrackSessionView } from '@/hooks/useTrackSessionView'
 import { TabBar } from './TabBar'
 import { TabContent } from './TabContent'
@@ -43,6 +44,7 @@ export function MainArea(): React.ReactElement {
   const activeView = useAtomValue(activeViewAtom)
   const interfaceVariant = useAtomValue(interfaceVariantAtom)
   const isClassic = interfaceVariant === 'classic'
+  const store = useStore()
 
   // Tab 内容渲染降级为非紧急：TabBar 立即高亮新 tab，主区域昂贵渲染（含 PreviewPanel 中
   // DiffTabContent → ProseMirror editor mount + Shiki tokenize）让出主线程，避免点击 tab
@@ -58,7 +60,7 @@ export function MainArea(): React.ReactElement {
   const previewOpen =
     activeTab?.type === 'agent' && (previewOpenMap.get(activeTab.sessionId) ?? false)
   const previewSessionId = activeTab?.type === 'agent' ? activeTab.sessionId : null
-  const [scratchPanelOpen, setScratchPanelOpen] = useAtom(scratchPadPanelOpenAtom)
+  const scratchPanelOpen = useAtomValue(scratchPadPanelOpenAtom)
   const showScratchPanel =
     activeTab?.type === 'agent' && scratchPanelOpen && activeView === 'conversations'
 
@@ -162,8 +164,8 @@ export function MainArea(): React.ReactElement {
   }, [rightWorkspaceRatio, setRightWorkspaceRatio])
 
   const handleCloseScratchPanel = React.useCallback(() => {
-    setScratchPanelOpen(false)
-  }, [setScratchPanelOpen])
+    closeScratchInSplit(store)
+  }, [store])
 
   React.useEffect(() => {
     if (tabs.length === 0) {

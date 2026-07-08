@@ -10,6 +10,7 @@ import {
   activeTabIdAtom,
   scratchPadPanelOpenAtom,
   SCRATCH_PAD_ID,
+  SCRATCH_PAD_TITLE,
   tabsAtom,
   type TabItem,
 } from '@/atoms/tab-atoms'
@@ -29,6 +30,15 @@ interface ScratchPadAgentSession {
 }
 
 type JotaiStore = ReturnType<typeof useStore>
+
+function createScratchTab(): TabItem {
+  return {
+    id: SCRATCH_PAD_ID,
+    type: 'scratch',
+    sessionId: SCRATCH_PAD_ID,
+    title: SCRATCH_PAD_TITLE,
+  }
+}
 
 function findTargetAgentTab(
   tabs: TabItem[],
@@ -82,4 +92,12 @@ export function openScratchInSplit(store: JotaiStore): boolean {
 
 export function tearOffScratchToSplit(store: JotaiStore): void {
   openScratchInSplit(store)
+}
+
+export function closeScratchInSplit(store: JotaiStore): void {
+  const tabs = store.get(tabsAtom)
+  store.set(scratchPadPanelOpenAtom, false)
+
+  if (tabs.some((tab) => tab.id === SCRATCH_PAD_ID)) return
+  store.set(tabsAtom, [createScratchTab(), ...tabs])
 }
