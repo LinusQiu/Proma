@@ -26,12 +26,8 @@ function getSessionCleanerSkillName(workspaceSlug?: string): string {
     : 'session-cleaner'
 }
 
-function getSessionCliCommandPrefix(): string {
-  return getBundledCliPath() ? '"$PROMA_CLI"' : 'proma'
-}
-
 function buildSessionCliAccessGuide(sessionId: string, historyPath: string, workspaceSlug?: string): string {
-  const cli = getSessionCliCommandPrefix()
+  const cli = 'proma'
   const skillName = getSessionCleanerSkillName(workspaceSlug)
   return [
     `优先使用 session-cleaner skill（${skillName}）读取当前会话历史；它是 Proma CLI 的薄封装，会把 Agent JSONL 清洗为干净对话。`,
