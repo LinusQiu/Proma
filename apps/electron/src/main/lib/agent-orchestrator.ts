@@ -57,6 +57,7 @@ import { applyAgentModelRoutingToEnv, resolveAgentModelRouting } from './agent-m
 import { validateToolInput } from './agent-tool-input-validator'
 import { estimateTokenCount, WRITE_CONTENT_TOKEN_THRESHOLD } from './agent-tool-token-estimator'
 import { injectBuiltinMcpServers } from './builtin-mcp/registry'
+import { isVisibleRunMessage } from './agent-run-message-visibility'
 
 // ===== 类型定义 =====
 
@@ -85,46 +86,12 @@ function sdkPermissionModeForPromaMode(mode: PromaPermissionMode): PromaPermissi
 
 const EMPTY_RESPONSE_RESULT_SUBTYPE = 'empty_response'
 
-function isNonEmptyString(value: unknown): boolean {
-  return typeof value === 'string' && value.trim().length > 0
-}
-
 function errorMessageOf(error: unknown): string {
   return error instanceof Error ? error.message : String(error)
 }
 
 function isMissingActiveQueueChannelError(error: unknown): boolean {
   return errorMessageOf(error).includes('无活跃消息通道可注入队列消息')
-}
-
-function isVisibleRunMessage(message: SDKMessage): boolean {
-  const msgRecord = message as Record<string, unknown>
-  if (msgRecord.isReplay) return false
-
-  if (message.type === 'assistant') {
-    const assistantMsg = message as SDKAssistantMessage
-    if (assistantMsg.error) return true
-    const content = assistantMsg.message?.content
-    if (!Array.isArray(content)) return false
-    return content.some((block) => {
-      if (block.type === 'text') return isNonEmptyString((block as { text?: unknown }).text)
-      if (block.type === 'thinking') return isNonEmptyString((block as { thinking?: unknown }).thinking)
-      if (block.type === 'tool_use') return true
-      return Object.keys(block).length > 1
-    })
-  }
-
-  if (message.type === 'user') {
-    const content = (message as { message?: { content?: Array<{ type: string }> } }).message?.content
-    return Array.isArray(content) && content.some((block) => block.type === 'tool_result')
-  }
-
-  if (message.type === 'system') {
-    const subtype = (message as SDKSystemMessage).subtype
-    return subtype === 'task_started' || subtype === 'task_progress' || subtype === 'task_notification'
-  }
-
-  return false
 }
 
 /**
