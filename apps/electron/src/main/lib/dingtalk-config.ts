@@ -9,9 +9,10 @@
  */
 
 import { randomUUID } from 'node:crypto'
-import { readFileSync, writeFileSync, existsSync, renameSync, unlinkSync } from 'node:fs'
+import { readFileSync, existsSync, renameSync, unlinkSync } from 'node:fs'
 import { safeStorage } from 'electron'
 import { getDingTalkConfigPath, getDingTalkBotBindingsPath } from './config-paths'
+import { writeJsonFileAtomic } from './safe-file'
 import { createStableDingTalkBotId } from './dingtalk-bot-identity'
 import type {
   DingTalkConfig,
@@ -76,7 +77,7 @@ function mergeJsonArrayFiles(sourcePath: string, targetPath: string): void {
     byChatId.set(chatId, item)
   }
 
-  writeFileSync(targetPath, JSON.stringify(Array.from(byChatId.values()), null, 2), 'utf-8')
+  writeJsonFileAtomic(targetPath, Array.from(byChatId.values()))
 }
 
 function migrateDingTalkBindingFile(oldBotId: string, nextBotId: string): void {
@@ -151,7 +152,7 @@ function readRawConfig(): DingTalkMultiBotConfig {
     if (data.version === 2 && Array.isArray(data.bots)) {
       const config = data as unknown as DingTalkMultiBotConfig
       if (normalizeBotIds(config)) {
-        writeFileSync(configPath, JSON.stringify(config, null, 2), 'utf-8')
+        writeJsonFileAtomic(configPath, config)
         console.log('[钉钉配置] 已稳定 Bot ID 并迁移绑定文件')
       }
       return config
@@ -160,8 +161,7 @@ function readRawConfig(): DingTalkMultiBotConfig {
     // v1 格式 → 迁移
     const v1 = data as unknown as DingTalkConfig
     const v2 = migrateV1ToV2(v1)
-    // 写回迁移后的新格式
-    writeFileSync(configPath, JSON.stringify(v2, null, 2), 'utf-8')
+    writeJsonFileAtomic(configPath, v2)
     console.log('[钉钉配置] 已从 v1 迁移到 v2 多 Bot 格式')
     return v2
   } catch (error) {
@@ -172,7 +172,7 @@ function readRawConfig(): DingTalkMultiBotConfig {
 
 function writeMultiConfig(config: DingTalkMultiBotConfig): void {
   const configPath = getDingTalkConfigPath()
-  writeFileSync(configPath, JSON.stringify(config, null, 2), 'utf-8')
+  writeJsonFileAtomic(configPath, config)
 }
 
 // ===== 多 Bot API =====

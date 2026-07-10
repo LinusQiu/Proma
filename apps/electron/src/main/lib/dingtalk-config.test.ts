@@ -100,4 +100,47 @@ describe('钉钉 Bot 配置迁移', () => {
     expect(existsSync(configPaths.getDingTalkBotBindingsPath(legacyBotId))).toBe(false)
     expect(JSON.parse(readFileSync(configPaths.getDingTalkBotBindingsPath(stableBotId), 'utf-8'))).toEqual(bindings)
   })
+
+  test('Given 旧绑定文件与稳定路径绑定文件同时存在 When 迁移 Then 按 chatId 去重合并', () => {
+    const legacyBotId = 'legacy-random-bot-id-2'
+    const clientId = 'ding-app-key-2'
+    const stableBotId = createStableDingTalkBotId(clientId)!
+
+    const oldBindings = [
+      { chatId: 'chat-shared', sessionId: 'old-session', workspaceId: 'ws-1', channelId: 'ch-1' },
+      { chatId: 'chat-only-old', sessionId: 'session-old', workspaceId: 'ws-1', channelId: 'ch-2' },
+    ]
+    const existingBindings = [
+      { chatId: 'chat-shared', sessionId: 'new-session', workspaceId: 'ws-1', channelId: 'ch-1' },
+      { chatId: 'chat-only-new', sessionId: 'session-new', workspaceId: 'ws-1', channelId: 'ch-3' },
+    ]
+
+    writeFileSync(configPaths.getDingTalkConfigPath(), JSON.stringify({
+      version: 2,
+      bots: [
+        {
+          id: legacyBotId,
+          name: '钉钉助手',
+          enabled: true,
+          clientId,
+          clientSecret: 'secret',
+          defaultWorkspaceId: 'ws-1',
+        },
+      ],
+    }, null, 2), 'utf-8')
+    writeFileSync(configPaths.getDingTalkBotBindingsPath(legacyBotId), JSON.stringify(oldBindings, null, 2), 'utf-8')
+    writeFileSync(configPaths.getDingTalkBotBindingsPath(stableBotId), JSON.stringify(existingBindings, null, 2), 'utf-8')
+
+    const config = dingtalkConfig.getDingTalkMultiBotConfig()
+
+    expect(config.bots[0]?.id).toBe(stableBotId)
+    expect(existsSync(configPaths.getDingTalkBotBindingsPath(legacyBotId))).toBe(false)
+
+    const merged = JSON.parse(readFileSync(configPaths.getDingTalkBotBindingsPath(stableBotId), 'utf-8'))
+    const chatIds = merged.map((b: { chatId: string }) => b.chatId).sort()
+    expect(chatIds).toEqual(['chat-only-new', 'chat-only-old', 'chat-shared'])
+    // target（稳定路径）的条目优先
+    const shared = merged.find((b: { chatId: string }) => b.chatId === 'chat-shared')
+    expect(shared.sessionId).toBe('new-session')
+  })
 })
