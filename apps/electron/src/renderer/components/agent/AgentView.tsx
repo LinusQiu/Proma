@@ -642,12 +642,16 @@ export function AgentView({ sessionId }: { sessionId: string }): React.ReactElem
     // Proma 官方渠道（商业版）：只要 enabled 且有可用模型，直接视为可用
     const promaOfficial = globalChannels.find((c) => c.id === 'proma-official')
     if (promaOfficial?.enabled && promaOfficial.models.some((m) => m.enabled)) return true
-    // 其他渠道：需在 agentChannelIds 白名单中
+    // Pi runtime 支持所有协议，任何已启用渠道都可用
+    if (sessionAgentRuntime === 'pi') {
+      return globalChannels.some((c) => c.enabled && c.models.some((m) => m.enabled))
+    }
+    // Claude runtime：需在 agentChannelIds 白名单中
     if (!agentChannelIds || agentChannelIds.length === 0) return false
     return globalChannels.some(
       (c) => c.enabled && agentChannelIds.includes(c.id) && c.models.some((m) => m.enabled),
     )
-  }, [globalChannels, agentChannelIds])
+  }, [globalChannels, agentChannelIds, sessionAgentRuntime])
   React.useEffect(() => {
     if (!agentChannelId || agentModelId) return
 
@@ -2459,7 +2463,7 @@ export function AgentView({ sessionId }: { sessionId: string }): React.ReactElem
       key: 'model',
       node: (
         <ModelSelector
-          filterChannelIds={agentChannelIds}
+          filterChannelIds={sessionAgentRuntime === 'pi' ? undefined : agentChannelIds}
           externalSelectedModel={externalSelectedModel}
           onModelSelect={handleModelSelect}
           useSharedOpenState
