@@ -624,6 +624,13 @@ export function useGlobalAgentListeners(): void {
           } else if (msgRecord.type === 'system' && msgRecord.subtype === 'thinking_tokens') {
             // thinking_tokens 是高频进度估算，只更新流式状态，不进入消息转录。
           } else if (!msgRecord.isReplay) {
+            // Pi _partial 消息只用于更新 streamState（下方 legacyEvents 路径），
+            // 不进入 liveMessages 避免气泡整体替换造成视觉跳动。
+            // 最终非 partial 的完整消息才渲染结构化气泡。
+            const isPartialMessage = msgRecord._partial === true
+            if (isPartialMessage) {
+              // 跳过 liveMessages，只走 legacyEvents → streamState.content → useSmoothStream
+            } else {
             // 为实时消息补充 _createdAt 时间戳（与持久化时的逻辑一致），
             // 避免 AssistantTurnRenderer 因缺少时间戳导致 header 时间消失
             if (typeof msgRecord._createdAt !== 'number') {
@@ -666,6 +673,7 @@ export function useGlobalAgentListeners(): void {
               map.set(sessionId, [...current, payload.message])
               return map
             })
+            }
           }
         }
 
