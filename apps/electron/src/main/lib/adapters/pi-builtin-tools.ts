@@ -32,6 +32,7 @@ import {
 } from '../automation-scheduler'
 import { getAgentSessionMeta } from '../agent-session-manager'
 import { isBuiltinMcpUserEnabled } from '../builtin-mcp/settings'
+import { buildPiCollaborationTools } from '../agent-collaboration-tools'
 
 type PiSdk = typeof import('@earendil-works/pi-coding-agent')
 
@@ -373,10 +374,26 @@ export async function buildPiBuiltinTools(
     }
   }
 
-  // collaboration 完整桥接放下一阶段
+  // collaboration 桥接
   const collaborationAvailable = isBuiltinMcpUserEnabled('collaboration') &&
     !!ctx.workspaceId &&
     ctx.triggeredBy !== 'delegation'
+
+  if (collaborationAvailable) {
+    try {
+      const collaborationTools = buildPiCollaborationTools(sdk, {
+        sessionId: ctx.sessionId,
+        channelId: ctx.channelId,
+        modelId: ctx.modelId,
+        workspaceId: ctx.workspaceId,
+        permissionMode: ctx.permissionMode,
+        triggeredBy: ctx.triggeredBy,
+      })
+      tools.push(...collaborationTools as ToolDefinition[])
+    } catch (error) {
+      console.error('[Pi 桥接] 注入 collaboration 工具失败:', error)
+    }
+  }
 
   // nano-banana 当前走外部 MCP stdio，不需要 in-process 桥接
 
