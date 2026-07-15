@@ -5,19 +5,24 @@
  * 功能：
  * - 分步执行打包流程，每步带计时和状态指示
  * - 支持只构建当前架构（--current-arch）加速开发测试
+ * - 支持指定目标架构（--arm64 / --x64）覆盖当前架构
  * - 支持详细输出模式（--verbose）查看 electron-builder 完整日志
  * - 支持跳过代码签名（--no-sign）
  * - 支持只构建 DMG 或 ZIP（--dmg / --zip）
+ * - 支持跳过 CLI 编译（--skip-cli），用于实验性交叉打包
  *
  * 使用：
  * bun run scripts/dist.ts                          # 完整打包（双架构 + DMG + ZIP）
  * bun run scripts/dist.ts --current-arch            # 只构建当前架构（快速）
  * bun run scripts/dist.ts --current-arch --verbose   # 当前架构 + 详细日志
  * bun run scripts/dist.ts --current-arch --dmg       # 当前架构 + 只构建 DMG
+ * bun run scripts/dist.ts --arm64                    # 只构建 ARM64
+ * bun run scripts/dist.ts --win --arm64 --skip-cli   # 实验性交叉打包 Windows ARM64（不含 CLI）
  * bun run scripts/dist.ts --no-sign                 # 跳过代码签名
  */
 
 import { spawnSync } from 'child_process'
+import { existsSync, mkdirSync, rmSync } from 'fs'
 import { join } from 'path'
 
 // ============================================
@@ -37,6 +42,13 @@ interface DistOptions {
   noSign: boolean
   targetFormat: 'all' | 'dmg' | 'zip' | 'dir'
   platform: 'mac' | 'win' | 'linux'
+  targetArch: 'arm64' | 'x64' | null
+  skipCli: boolean
+}
+
+interface TargetTriple {
+  platform: 'mac' | 'win' | 'linux'
+  arch: 'arm64' | 'x64' | 'multi'
 }
 
 // ============================================
@@ -128,16 +140,80 @@ function runStep(
   return { name, duration, success: result.status === 0, skipped: false }
 }
 
+function getHostPlatform(): DistOptions['platform'] {
+  if (process.platform === 'darwin') return 'mac'
+  if (process.platform === 'win32') return 'win'
+  return 'linux'
+}
+
+function getHostArch(): 'arm64' | 'x64' {
+  if (process.arch !== 'arm64' && process.arch !== 'x64') {
+    throw new Error(`不支持的主机架构: ${process.arch}`)
+  }
+  return process.arch
+}
+
+function getTargetTriple(opts: DistOptions): TargetTriple {
+  return {
+    platform: opts.platform,
+    arch: opts.targetArch ?? (opts.currentArch ? getHostArch() : 'multi'),
+  }
+}
+
+function shouldBuildCli(opts: DistOptions, target: TargetTriple): boolean {
+  if (opts.skipCli) return false
+  if (target.arch === 'multi') return target.platform === getHostPlatform()
+  return target.platform === getHostPlatform() && target.arch === getHostArch()
+}
+
+function assertCliBuildIsSafe(opts: DistOptions, target: TargetTriple): void {
+  if (opts.skipCli) return
+
+  const host = `${getHostPlatform()}-${getHostArch()}`
+  const targetName = `${target.platform}-${target.arch}`
+  const samePlatform = target.platform === getHostPlatform()
+  const sameArch = target.arch === 'multi' || target.arch === getHostArch()
+  if (!samePlatform || !sameArch) {
+    console.error(
+      `${color.red}[dist] 无法在 ${host} 主机上为 ${targetName} 编译 proma CLI。${color.reset}`
+    )
+    console.error(
+      `${color.yellow}[dist] 正式发布请使用目标平台/架构 runner；实验性交叉打包请显式加 --skip-cli。${color.reset}`
+    )
+    process.exit(1)
+  }
+}
+
+function clearCliResources(): void {
+  const cliDir = join(import.meta.dir, '..', 'resources', 'bin')
+  if (existsSync(cliDir)) {
+    rmSync(cliDir, { recursive: true, force: true })
+  }
+  mkdirSync(cliDir, { recursive: true })
+}
+
 // ============================================
 // 主流程
 // ============================================
 
 function parseArgs(): DistOptions {
   const args = process.argv.slice(2)
+  const hasTargetArch = args.includes('--arm64') || args.includes('--x64')
+
+  if (args.includes('--arm64') && args.includes('--x64')) {
+    console.error(`${color.red}[dist] --arm64 和 --x64 不能同时使用${color.reset}`)
+    process.exit(1)
+  }
+  if (hasTargetArch && args.includes('--current-arch')) {
+    console.warn(`${color.yellow}[dist] 同时使用目标架构和 --current-arch，已忽略 --current-arch${color.reset}`)
+  }
+
   return {
-    currentArch: args.includes('--current-arch'),
+    currentArch: args.includes('--current-arch') && !hasTargetArch,
     verbose: args.includes('--verbose'),
     noSign: args.includes('--no-sign'),
+    skipCli: args.includes('--skip-cli'),
+    targetArch: args.includes('--arm64') ? 'arm64' : args.includes('--x64') ? 'x64' : null,
     targetFormat: args.includes('--dmg')
       ? 'dmg'
       : args.includes('--zip')
@@ -155,15 +231,18 @@ function parseArgs(): DistOptions {
 
 function main(): void {
   const opts = parseArgs()
-  const arch = process.arch // arm64 或 x64
+  const target = getTargetTriple(opts)
+  assertCliBuildIsSafe(opts, target)
   const results: StepResult[] = []
 
   // 打印配置信息
   console.log(`\n${color.bgBlue}${color.bold} Proma 打包工具 ${color.reset}\n`)
   console.log(`  ${color.bold}平台${color.reset}:     ${opts.platform}`)
-  console.log(`  ${color.bold}架构${color.reset}:     ${opts.currentArch ? arch + ' (仅当前)' : 'arm64 + x64'}`)
+  console.log(`  ${color.bold}架构${color.reset}:     ${target.arch === 'multi' ? 'arm64 + x64' : target.arch}`)
+  console.log(`  ${color.bold}主机${color.reset}:     ${getHostPlatform()}-${getHostArch()}`)
   console.log(`  ${color.bold}格式${color.reset}:     ${opts.targetFormat}`)
   console.log(`  ${color.bold}签名${color.reset}:     ${opts.noSign ? '跳过' : '启用'}`)
+  console.log(`  ${color.bold}CLI${color.reset}:      ${shouldBuildCli(opts, target) ? '编译' : '跳过'}`)
   console.log(`  ${color.bold}详细日志${color.reset}: ${opts.verbose ? '开启' : '关闭'}`)
   printSeparator()
 
@@ -200,8 +279,14 @@ function main(): void {
   // ── 步骤 4: 编译 proma CLI 二进制 ──
   step++
   printStepStart(step, totalSteps, '编译 proma CLI (bun --compile)')
+  if (!shouldBuildCli(opts, target)) {
+    clearCliResources()
+  }
   results.push(
-    runStep('编译 proma CLI', 'bun', ['run', 'build:cli'], { verbose: opts.verbose })
+    runStep('编译 proma CLI', 'bun', ['run', 'build:cli'], {
+      verbose: opts.verbose,
+      skip: !shouldBuildCli(opts, target),
+    })
   )
   printStepResult(results[results.length - 1])
   if (!results[results.length - 1].success) return printSummary(results)
@@ -220,9 +305,9 @@ function main(): void {
 
   const builderArgs = ['electron-builder', `--${opts.platform}`]
 
-  // 只构建当前架构
-  if (opts.currentArch) {
-    builderArgs.push(`--${arch}`)
+  // 指定目标架构
+  if (target.arch !== 'multi') {
+    builderArgs.push(`--${target.arch}`)
   }
 
   // 指定输出格式

@@ -10,6 +10,10 @@
 # - APPLE_APP_SPECIFIC_PASSWORD: App-Specific 密码（公证用）
 # - APPLE_TEAM_ID: Apple Developer Team ID
 # GITHUB_TOKEN 由 GitHub Actions 自动提供，无需手动配置
+#
+# Windows ARM64 发布默认关闭，等有 Windows ARM 真机或可用 runner 后再启用：
+# - ENABLE_WINDOWS_ARM64_RELEASE=true
+# - WINDOWS_ARM64_RUNNER=windows-11-arm（或自托管 runner label）
 
 name: Release
 
@@ -314,4 +318,42 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: npx electron-builder --win --x64 --publish always
+        working-directory: apps/electron
+
+  build-windows-arm64:
+    name: build (Windows ARM64, win, arm64, --arm64)
+    if: vars.ENABLE_WINDOWS_ARM64_RELEASE == 'true'
+    runs-on: ${{ vars.WINDOWS_ARM64_RUNNER || 'windows-11-arm' }}
+
+    steps:
+      - name: 检出代码
+        uses: actions/checkout@v4
+
+      - name: 安装 Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+
+      - name: 安装 Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: 确认 Windows ARM64 runner
+        shell: pwsh
+        run: |
+          node -e "const actual = process.platform + '-' + process.arch; if (actual !== 'win32-arm64') { console.error('Expected win32-arm64, got ' + actual); process.exit(1) }"
+
+      - name: 安装依赖
+        run: bun install --frozen-lockfile
+
+      # 构建应用。Windows ARM64 runner 会产出原生 proma.exe CLI，避免交叉编译污染安装包。
+      - name: 构建 Electron 应用
+        run: bun run electron:build
+        working-directory: .
+
+      - name: 打包并发布 (Windows ARM64)
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: npx electron-builder --win --arm64 --publish always
         working-directory: apps/electron

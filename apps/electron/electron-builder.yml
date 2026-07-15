@@ -127,8 +127,9 @@ win:
     - target: nsis
       arch:
         - x64
+        - arm64
 
-# NSIS 安装程序配置
+# NSIS 安装程序配置（x64 + arm64 均使用安装器；正式 arm64 包需在 Windows ARM runner 上构建）
 nsis:
   oneClick: false
   allowToChangeInstallationDirectory: true
