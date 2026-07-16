@@ -8,11 +8,8 @@
  * 用 Pi ToolDefinition 格式暴露相同的业务能力，避免 Pi runtime 下这些工具缺失。
  */
 
-// @ts-expect-error — typebox resolved at runtime via external dependency
 import { Type } from 'typebox'
-// @ts-expect-error — Pi SDK types resolved at runtime via external dependency
 import type { ToolDefinition } from '@earendil-works/pi-coding-agent'
-// @ts-expect-error — Pi SDK types resolved at runtime via external dependency
 import type { AgentToolResult } from '@earendil-works/pi-agent-core'
 import type { PromaPermissionMode } from '@proma/shared'
 import type {
