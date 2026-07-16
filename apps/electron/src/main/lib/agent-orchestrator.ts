@@ -30,7 +30,6 @@ import {
   isPersistableSDKSystemMessage,
   normalizeMcpTransportType,
   inferAgentSdkContextWindow,
-  resolveAgentSdkModelId,
 } from '@proma/shared'
 import type { PromaPermissionMode, AskUserRequest, ExitPlanModeRequest, SDKSystemMessage } from '@proma/shared'
 import type { ClaudeAgentQueryOptions } from './adapters/claude-agent-adapter'
@@ -1527,8 +1526,10 @@ export class AgentOrchestrator {
         agentRuntime: 'pi',
         sessionId,
         prompt: finalPrompt,
-        // 已验证的内置供应商可用 `[1m]` 选择扩展上下文；通用兼容端点保持原始模型 ID。
-        model: resolveAgentSdkModelId(selectedModelId, channel.provider),
+        // pi runtime 不支持 Claude Agent SDK 的 `[1m]` 扩展上下文变体：
+        // 智谱等端点不识别 glm-5.2[1m] 这类后缀，会返回 1211「模型不存在」。
+        // 因此 pi 分支直接使用用户配置的原始模型 ID，不追加任何 `[1m]`。
+        model: selectedModelId,
         cwd: agentCwd,
         apiKey,
         baseUrl: channel.baseUrl,
