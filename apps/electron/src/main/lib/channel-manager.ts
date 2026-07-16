@@ -131,6 +131,11 @@ function inferProviderFromBaseUrl(provider: ProviderType, baseUrl: string): Prov
     if (hostname === 'api.moonshot.cn' || hostname === 'api.moonshot.ai') {
       return 'kimi-api'
     }
+    // 火山方舟域名同时承载 OpenAI 协议与 Anthropic Coding Plan。只有用户选了
+    // 通用 Anthropic 兼容格式时才纠正为内置 ark-coding-plan，避免拉模型误走 /models。
+    if (provider === 'anthropic-compatible' && hostname === 'ark.cn-beijing.volces.com') {
+      return 'ark-coding-plan'
+    }
     return provider
   } catch {
     return provider
@@ -1201,8 +1206,10 @@ async function queryZhipuPlanQuota(
   provider: ProviderType = 'zhipu-coding',
 ): Promise<ChannelPlanQuotaResult> {
   if (provider === 'zhipu-coding-team') {
-    const teamCredentials = parseZhipuTeamCredentials(apiKey)
-    if (!teamCredentials) {
+    const teamCredentials = parseZhipuTeamCredentials(apiKey) ?? {
+      apiKey: extractZhipuCodingTeamApiToken(apiKey),
+    }
+    if (!teamCredentials.apiKey.trim()) {
       return createUnsupportedPlanQuota(
         'zhipu-coding-team',
         '请填写 API Token；组织 ID 和项目 ID 可选',
