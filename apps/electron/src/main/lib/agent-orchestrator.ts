@@ -29,6 +29,8 @@ import {
   THINKING_SIGNATURE_ERROR_TITLE,
   isPersistableSDKSystemMessage,
   normalizeMcpTransportType,
+  inferAgentSdkContextWindow,
+  resolveAgentSdkModelId,
 } from '@proma/shared'
 import type { PromaPermissionMode, AskUserRequest, ExitPlanModeRequest, SDKSystemMessage } from '@proma/shared'
 import type { ClaudeAgentQueryOptions } from './adapters/claude-agent-adapter'
@@ -59,6 +61,9 @@ import { estimateTokenCount, WRITE_CONTENT_TOKEN_THRESHOLD } from './agent-tool-
 import { injectBuiltinMcpServers } from './builtin-mcp/registry'
 import { buildPiBuiltinTools } from './adapters/pi-builtin-tools'
 import type { AgentRuntimeEnv } from './agent-runtime-env'
+import { isVisibleRunMessage } from './agent-run-message-visibility'
+import { applyAgentSdkAuthEnv } from './agent-sdk-auth-env'
+import { getAgentSdkMaxOutputTokens } from './agent-sdk-output-limits'
 
 // ===== 类型定义 =====
 
@@ -111,10 +116,6 @@ function resolvePiThinkingLevel(settings: ReturnType<typeof getSettings>): Agent
 
 const EMPTY_RESPONSE_RESULT_SUBTYPE = 'empty_response'
 
-function isNonEmptyString(value: unknown): boolean {
-  return typeof value === 'string' && value.trim().length > 0
-}
-
 function errorMessageOf(error: unknown): string {
   return error instanceof Error ? error.message : String(error)
 }
@@ -125,37 +126,6 @@ function isMissingActiveQueueChannelError(error: unknown): boolean {
 
 function isPartialSDKMessage(message: SDKMessage): boolean {
   return (message as Record<string, unknown>)._partial === true
-}
-
-function isVisibleRunMessage(message: SDKMessage): boolean {
-  const msgRecord = message as Record<string, unknown>
-  if (msgRecord.isReplay) return false
-  if (isPartialSDKMessage(message)) return false
-
-  if (message.type === 'assistant') {
-    const assistantMsg = message as SDKAssistantMessage
-    if (assistantMsg.error) return true
-    const content = assistantMsg.message?.content
-    if (!Array.isArray(content)) return false
-    return content.some((block) => {
-      if (block.type === 'text') return isNonEmptyString((block as { text?: unknown }).text)
-      if (block.type === 'thinking') return isNonEmptyString((block as { thinking?: unknown }).thinking)
-      if (block.type === 'tool_use') return true
-      return Object.keys(block).length > 1
-    })
-  }
-
-  if (message.type === 'user') {
-    const content = (message as { message?: { content?: Array<{ type: string }> } }).message?.content
-    return Array.isArray(content) && content.some((block) => block.type === 'tool_result')
-  }
-
-  if (message.type === 'system') {
-    const subtype = (message as SDKSystemMessage).subtype
-    return subtype === 'task_started' || subtype === 'task_progress' || subtype === 'task_notification'
-  }
-
-  return false
 }
 
 /**
@@ -464,6 +434,7 @@ export class AgentOrchestrator {
     apiKey: string,
     baseUrl: string | undefined,
     provider: ProviderType,
+    modelId: string | undefined,
   ): Promise<Record<string, string | undefined>> {
     const DEFAULT_ANTHROPIC_URL = 'https://api.anthropic.com'
 
@@ -474,15 +445,17 @@ export class AgentOrchestrator {
     // loadShellEnv() 可能从 shell 配置文件（~/.zshrc 等）重新注入这些变量。
     const cleanEnv: Record<string, string | undefined> = {}
     for (const [key, value] of Object.entries(process.env)) {
-      if (!key.startsWith('ANTHROPIC_')) {
+      if (!key.startsWith('ANTHROPIC_') && key !== 'CLAUDE_CODE_MAX_OUTPUT_TOKENS') {
         cleanEnv[key] = value
       }
     }
 
+    const maxOutputTokens = getAgentSdkMaxOutputTokens(modelId)
+
     const sdkEnv: Record<string, string | undefined> = {
       ...cleanEnv,
-      // 提升输出 token 上限，避免 "exceeded 32000 output token maximum" 错误
-      CLAUDE_CODE_MAX_OUTPUT_TOKENS: '64000',
+      // 仅 Claude 模型显式提高输出上限；其它兼容模型不注入 max_tokens 覆盖。
+      ...(maxOutputTokens ? { CLAUDE_CODE_MAX_OUTPUT_TOKENS: maxOutputTokens } : {}),
       // 暴露打包进 App 的 proma CLI 路径，供 session-cleaner 等 skill / Agent 调用
       // （开发模式无编译二进制，getBundledCliPath 返回 undefined，此处不注入，
       //   skill 回退到源码运行 bun apps/cli/src/index.ts）。
@@ -513,19 +486,14 @@ export class AgentOrchestrator {
     }
 
     // 认证方式按 provider 分支
-    // - Kimi Coding Plan：只认 Bearer，通过 ANTHROPIC_CUSTOM_HEADERS 注入 Proma UA
+    // - Coding Plan / Token Plan：只认 Bearer，通过 ANTHROPIC_CUSTOM_HEADERS 注入 Proma UA
     // - MiniMax Coding Plan：Claude Code 场景使用 Bearer（ANTHROPIC_AUTH_TOKEN）
     // - 通过 ANTHROPIC_AUTH_TOKEN 让 SDK 发 Authorization: Bearer
     // - 其它：ANTHROPIC_API_KEY（SDK 内部会同时带上 x-api-key 和 Bearer）
-    if (provider === 'kimi-coding' || provider === 'zhipu-coding' || provider === 'xiaomi-token-plan') {
-      sdkEnv.ANTHROPIC_AUTH_TOKEN = apiKey
-      sdkEnv.ANTHROPIC_CUSTOM_HEADERS = `User-Agent: ${getPromaUserAgent(pkg.version)}`
-    } else if (provider === 'minimax') {
-      sdkEnv.ANTHROPIC_AUTH_TOKEN = apiKey
+    applyAgentSdkAuthEnv(sdkEnv, provider, apiKey, getPromaUserAgent(pkg.version))
+    if (provider === 'minimax') {
       sdkEnv.API_TIMEOUT_MS = '3000000'
       sdkEnv.CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC = '1'
-    } else {
-      sdkEnv.ANTHROPIC_API_KEY = apiKey
     }
 
     // 全局 API 超时保护：防止网络环境变化（代理断开/WiFi 切换等）导致 SDK 子进程的
@@ -1059,20 +1027,8 @@ export class AgentOrchestrator {
     delete process.env.ANTHROPIC_AUTH_TOKEN
     delete process.env.ANTHROPIC_BASE_URL
     delete process.env.ANTHROPIC_CUSTOM_HEADERS
-    if (channel.provider === 'kimi-coding') {
-      // Kimi Coding Plan：只用 Bearer + 必须带 User-Agent
-      process.env.ANTHROPIC_AUTH_TOKEN = apiKey
-      process.env.ANTHROPIC_CUSTOM_HEADERS = `User-Agent: ${getPromaUserAgent(pkg.version)}`
-    } else if (channel.provider === 'xiaomi-token-plan') {
-      // 小米 Token Plan：Bearer + 必须带 User-Agent
-      process.env.ANTHROPIC_AUTH_TOKEN = apiKey
-      process.env.ANTHROPIC_CUSTOM_HEADERS = `User-Agent: ${getPromaUserAgent(pkg.version)}`
-    } else if (channel.provider === 'minimax') {
-      // MiniMax Coding Plan：Claude Code 兼容配置使用 Bearer
-      process.env.ANTHROPIC_AUTH_TOKEN = apiKey
-    } else {
-      process.env.ANTHROPIC_API_KEY = apiKey
-    }
+    delete process.env.CLAUDE_CODE_MAX_OUTPUT_TOKENS
+    applyAgentSdkAuthEnv(process.env, channel.provider, apiKey, getPromaUserAgent(pkg.version))
     // 使用与 buildSdkEnv 相同的规范化逻辑，确保 process.env 和 sdkEnv 中的 URL 一致
     if (channel.baseUrl && channel.baseUrl !== 'https://api.anthropic.com') {
       process.env.ANTHROPIC_BASE_URL = normalizeAnthropicBaseUrlForSdk(channel.baseUrl)
@@ -1080,8 +1036,8 @@ export class AgentOrchestrator {
 
     const modelRouting = resolveAgentModelRouting({ modelId: modelId || DEFAULT_MODEL_ID, provider: channel.provider })
     const proxyUrl = await getEffectiveProxyUrl()
-    const sdkEnv = await this.buildSdkEnv(apiKey, channel.baseUrl, channel.provider)
-    applyAgentModelRoutingToEnv(sdkEnv, modelRouting)
+    const sdkEnv = await this.buildSdkEnv(apiKey, channel.baseUrl, channel.provider, modelId || DEFAULT_MODEL_ID)
+    applyAgentModelRoutingToEnv(sdkEnv, modelRouting, channel.provider)
 
     // 4. 读取已有的 SDK session ID（用于 resume）
     let existingSdkSessionId = sessionMeta?.sdkSessionId
@@ -1510,7 +1466,8 @@ export class AgentOrchestrator {
 
       // 13. 构建 Adapter 查询选项
       // 检测用户选用的模型是否为 Claude 系列，决定 SubAgent 是否使用独立模型分层
-      const claudeAvailable = (modelId || DEFAULT_MODEL_ID).toLowerCase().includes('claude')
+      const selectedModelId = modelId || DEFAULT_MODEL_ID
+      const claudeAvailable = selectedModelId.toLowerCase().includes('claude')
       const maxTurns = appSettings.agentMaxTurns && appSettings.agentMaxTurns > 0
         ? appSettings.agentMaxTurns
         : undefined
@@ -1550,22 +1507,28 @@ export class AgentOrchestrator {
         }
       }
       const handleModelResolved = (model: string): void => {
-        resolvedModel = model
+        // `[1m]` 是 SDK 内部上下文变体，不应泄漏到标题生成或用户可见的模型名。
+        resolvedModel = model.replace(/\[1m\]$/i, '')
         console.log(`[Agent 编排] SDK 确认模型: ${resolvedModel}`)
-        this.eventBus.emit(sessionId, { kind: 'proma_event', event: { type: 'model_resolved', model } })
+        this.eventBus.emit(sessionId, { kind: 'proma_event', event: { type: 'model_resolved', model: resolvedModel } })
       }
       const handleContextWindow = (cw: number): void => {
-        console.log(`[Agent 编排] 缓存 contextWindow: ${cw}`)
+        const inferredWindow = inferAgentSdkContextWindow(modelId, channel.provider)
+        const contextWindow = Math.max(cw, inferredWindow ?? 0) || cw
+        console.log(`[Agent 编排] 缓存 contextWindow: ${contextWindow}`)
+        // result 消息里的真实 contextWindow 透传到 renderer，
+        // 覆盖流式过程中按模型名推断的 fallback 值（智谱等端点会把 [1m] 等后缀剥掉，导致 fallback 不准）
         this.eventBus.emit(sessionId, {
           kind: 'proma_event',
-          event: { type: 'context_window', contextWindow: cw },
+          event: { type: 'context_window', contextWindow },
         })
       }
       const queryOptions: ClaudeAgentQueryOptions | PiAgentQueryOptions = agentRuntime === 'pi' ? {
         agentRuntime: 'pi',
         sessionId,
         prompt: finalPrompt,
-        model: modelId || DEFAULT_MODEL_ID,
+        // 已验证的内置供应商可用 `[1m]` 选择扩展上下文；通用兼容端点保持原始模型 ID。
+        model: resolveAgentSdkModelId(selectedModelId, channel.provider),
         cwd: agentCwd,
         apiKey,
         baseUrl: channel.baseUrl,
@@ -1773,7 +1736,9 @@ export class AgentOrchestrator {
             pendingNext = null
             const msg = iterResult.value
             const isPartialMessage = isPartialSDKMessage(msg)
-            if (isVisibleRunMessage(msg)) {
+            // isVisibleRunMessage 已抽到独立模块，不含 partial 判断；
+            // pi runtime 的流式 partial 消息不应计入可见消息数，故在此显式排除。
+            if (!isPartialMessage && isVisibleRunMessage(msg)) {
               visibleRunMessageCount += 1
             }
 
@@ -1910,6 +1875,8 @@ export class AgentOrchestrator {
                     content: [{ type: 'text', text: errorContent }],
                   },
                   parent_tool_use_id: null,
+                  _channelModelId: modelId,
+                  _channelProvider: channel.provider,
                   error: { message: typedError.message, errorType: typedError.code },
                   _createdAt: Date.now(),
                   _errorCode: typedError.code,
@@ -1952,9 +1919,19 @@ export class AgentOrchestrator {
                     accumulatedMessages.push(msg)
                   }
                 } else {
-                  // 为 assistant 消息注入渠道 modelId，确保持久化后能正确匹配模型显示名
-                  if (msg.type === 'assistant' && modelId) {
-                    (msg as Record<string, unknown>)._channelModelId = modelId
+                  // 为结果消息注入渠道信息，确保持久化后能按 Agent SDK 运行窗口计算压缩阈值
+                  if (msg.type === 'result') {
+                    if (modelId) {
+                      (msg as Record<string, unknown>)._channelModelId = modelId
+                    }
+                    ;(msg as Record<string, unknown>)._channelProvider = channel.provider
+                  }
+                  // 为 assistant 消息注入渠道信息，确保持久化后能正确匹配模型显示名与 Agent SDK 窗口
+                  if (msg.type === 'assistant') {
+                    if (modelId) {
+                      (msg as Record<string, unknown>)._channelModelId = modelId
+                    }
+                    ;(msg as Record<string, unknown>)._channelProvider = channel.provider
                   }
                   accumulatedMessages.push(msg)
                 }

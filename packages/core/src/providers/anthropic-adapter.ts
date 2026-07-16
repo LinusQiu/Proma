@@ -6,7 +6,7 @@
  * - 角色：user / assistant（不支持 system 角色，system 通过 body.system 传递）
  * - 图片格式：{ type: 'image', source: { type: 'base64', media_type, data } }
  * - SSE 解析：content_block_delta → text，thinking_delta → reasoning，tool_use 支持
- * - 认证：x-api-key + Authorization: Bearer（Kimi Coding Plan 只用 Bearer）
+ * - 认证：按供应商差异发送 api-key / x-api-key / Authorization
  * - 同时适配 Anthropic 原生 API、DeepSeek、Kimi API、Kimi Coding Plan、MiniMax
  *
  * 思考模式按模型能力分支（见 thinking-capability.ts）：
@@ -23,7 +23,7 @@
  * - UA 格式：`Proma/<version> (+https://github.com/ErlichLiu/Proma)`
  */
 
-import type { ProviderType } from '@proma/shared'
+import { extractZhipuCodingTeamApiToken, type ProviderType } from '@proma/shared'
 import type {
   ProviderAdapter,
   ProviderRequest,
@@ -278,8 +278,8 @@ export class AnthropicAdapter implements ProviderAdapter {
       'anthropic-version': '2023-06-01',
       'content-type': 'application/json',
     }
-    if (this.providerType === 'kimi-coding' || this.providerType === 'zhipu-coding') {
-      base['Authorization'] = `Bearer ${apiKey}`
+    if (this.providerType === 'kimi-coding' || this.providerType === 'zhipu-coding' || this.providerType === 'zhipu-coding-team') {
+      base['Authorization'] = `Bearer ${this.providerType === 'zhipu-coding-team' ? extractZhipuCodingTeamApiToken(apiKey) : apiKey}`
       base['User-Agent'] = getPromaUserAgent()
       return base
     }
@@ -290,6 +290,10 @@ export class AnthropicAdapter implements ProviderAdapter {
     }
     if (this.providerType === 'minimax' || this.providerType === 'qwen-anthropic') {
       base['Authorization'] = `Bearer ${apiKey}`
+      return base
+    }
+    if (this.providerType === 'xiaomi') {
+      base['api-key'] = apiKey
       return base
     }
     // 其它渠道：保持双认证头（Anthropic 原生 + Bearer 兼容）

@@ -31,6 +31,7 @@ import type {
   ChannelCreateInput,
   ChannelUpdateInput,
   ChannelTestResult,
+  ChannelDirectTestInput,
   FetchModelsInput,
   FetchModelsResult,
   ConversationMeta,
@@ -127,6 +128,7 @@ import {
   testChannel,
   testChannelDirect,
   fetchModels,
+  getChannelPlanQuota,
 } from './lib/channel-manager'
 import {
   listConversations,
@@ -1143,7 +1145,7 @@ export function registerIpcHandlers(): void {
   // 直接测试连接（无需已保存渠道，传入明文凭证）
   ipcMain.handle(
     CHANNEL_IPC_CHANNELS.TEST_DIRECT,
-    async (_, input: FetchModelsInput): Promise<ChannelTestResult> => {
+    async (_, input: ChannelDirectTestInput): Promise<ChannelTestResult> => {
       return testChannelDirect(input)
     }
   )
@@ -1153,6 +1155,14 @@ export function registerIpcHandlers(): void {
     CHANNEL_IPC_CHANNELS.FETCH_MODELS,
     async (_, input: FetchModelsInput): Promise<FetchModelsResult> => {
       return fetchModels(input)
+    }
+  )
+
+  // 查询订阅 Plan 额度（用于 Agent Context 圆环 hover 信息）
+  ipcMain.handle(
+    CHANNEL_IPC_CHANNELS.GET_PLAN_QUOTA,
+    async (_, channelId: string): Promise<import('@proma/shared').ChannelPlanQuotaResult> => {
+      return getChannelPlanQuota(channelId)
     }
   )
 
@@ -1760,8 +1770,8 @@ export function registerIpcHandlers(): void {
   // 创建 Agent 会话
   ipcMain.handle(
     AGENT_IPC_CHANNELS.CREATE_SESSION,
-    async (_, title?: string, channelId?: string, workspaceId?: string): Promise<AgentSessionMeta> => {
-      const session = createAgentSession(title, channelId, workspaceId)
+    async (_, title?: string, channelId?: string, workspaceId?: string, modelId?: string): Promise<AgentSessionMeta> => {
+      const session = createAgentSession(title, channelId, workspaceId, modelId)
       feishuBridgeManager.ensureSessionMirror(session).catch((error) => {
         console.error('[飞书 Session 镜像] 新会话建群失败:', error)
       })
@@ -1782,6 +1792,14 @@ export function registerIpcHandlers(): void {
     AGENT_IPC_CHANNELS.UPDATE_TITLE,
     async (_, id: string, title: string): Promise<AgentSessionMeta> => {
       return updateAgentSessionMeta(id, { title })
+    }
+  )
+
+  // 更新 Agent 会话模型选择
+  ipcMain.handle(
+    AGENT_IPC_CHANNELS.UPDATE_SESSION_MODEL,
+    async (_, id: string, channelId?: string, modelId?: string): Promise<AgentSessionMeta> => {
+      return updateAgentSessionMeta(id, { channelId, modelId })
     }
   )
 
@@ -2892,7 +2910,7 @@ export function registerIpcHandlers(): void {
   // 在系统文件管理器中显示任意路径（无工作区限制，用户主动点击触发）
   ipcMain.handle(
     IPC_CHANNELS.SHOW_ITEM_IN_FOLDER,
-    async (_, filePath: string, candidateBasePaths?: string[]): Promise<void> => {
+    async (_, filePath: string, candidateBasePaths?: string[]): Promise<boolean> => {
       const { resolve } = await import('node:path')
       const { existsSync } = await import('node:fs')
       const { resolveTargetPath } = await import('./lib/file-preview-service')
@@ -2900,9 +2918,10 @@ export function registerIpcHandlers(): void {
       const resolvedPath = resolveTargetPath(filePath, candidateBasePaths?.length ? candidateBasePaths : undefined)
       if (!existsSync(resolvedPath)) {
         console.warn('[IPC] shell:show-item-in-folder 路径不存在:', resolvedPath)
-        return
+        return false
       }
       shell.showItemInFolder(resolve(resolvedPath))
+      return true
     }
   )
 

@@ -18,7 +18,7 @@ import { cn } from '@/lib/utils'
 import { ImageLightbox, type LightboxImage } from '@/components/ui/image-lightbox'
 import { ContentBlock } from './ContentBlock'
 import { TaskProgressCard } from './TaskProgressCard'
-import { TurnFileChangesSummary } from './TurnFileChangesSummary'
+import { TurnFileChangesSummary, buildTurnFileNameMap } from './TurnFileChangesSummary'
 import { ProcessBlockGroup, buildAssistantTurnRenderItems, buildCompletedToolResultIds } from './ProcessBlockGroup'
 import { extractToolResultText, parseTaskCreateResult, TASK_TOOL_NAMES } from './task-progress'
 import { normalizeThinkTagsInContentBlocks } from './thinking-tag-parser'
@@ -45,6 +45,7 @@ import {
   MessageAction,
   MessageResponse,
   UserMessageContent,
+  TurnFileMapProvider,
 } from '@/components/ai-elements/message'
 import { UserAvatar } from '@/components/chat/UserAvatar'
 import { CopyButton } from '@/components/chat/CopyButton'
@@ -80,6 +81,8 @@ import type {
 import type { AgentPendingFile } from '@proma/shared'
 import {
   getSDKCompactStatus,
+  inferAgentSdkContextWindow,
+  inferContextWindow,
   THINKING_SIGNATURE_ERROR_CODE,
   THINKING_SIGNATURE_ERROR_TITLE,
   THINKING_SIGNATURE_ERROR_MESSAGE,
@@ -215,11 +218,20 @@ function extractTurnUsage(turnMessages: SDKMessage[]): { durationMs?: number; us
     // 多 entry 场景（Task 子 Agent 等）：取最大 contextWindow
     let contextWindow: number | undefined
     if (resultMsg.modelUsage) {
-      for (const info of Object.values(resultMsg.modelUsage)) {
-        if (info?.contextWindow && (contextWindow === undefined || info.contextWindow > contextWindow)) {
-          contextWindow = info.contextWindow
+      for (const [modelId, info] of Object.entries(resultMsg.modelUsage)) {
+        const fallbackModelId = resultMsg._channelModelId ?? modelId
+        const fallbackWindow = resultMsg._channelProvider
+          ? inferAgentSdkContextWindow(fallbackModelId, resultMsg._channelProvider)
+          : inferContextWindow(fallbackModelId)
+        const candidate = Math.max(info?.contextWindow ?? 0, fallbackWindow ?? 0) || undefined
+        if (candidate && (contextWindow === undefined || candidate > contextWindow)) {
+          contextWindow = candidate
         }
       }
+    } else {
+      contextWindow = resultMsg._channelProvider
+        ? inferAgentSdkContextWindow(resultMsg._channelModelId, resultMsg._channelProvider)
+        : inferContextWindow(resultMsg._channelModelId)
     }
     return {
       durationMs,
@@ -485,6 +497,12 @@ export function AssistantTurnRenderer({ turn, allMessages, historicalTaskSubject
     })
   }, [topLevelBlocks, isStreaming, completedToolResultIds])
 
+  // 本轮「文件名 → 绝对路径」映射：与 footer chips 同源，供正文内联文件引用补全裸文件名
+  const turnFileMap = React.useMemo(
+    () => buildTurnFileNameMap(turn.turnMessages),
+    [turn.turnMessages]
+  )
+
   // 如果只有错误消息
   if (enrichedBlocks.length === 0 && hasError && errorContent) {
     return (
@@ -549,6 +567,7 @@ export function AssistantTurnRenderer({ turn, allMessages, historicalTaskSubject
         logo={<AssistantLogo model={turn.model} />}
       />
       <MessageContent>
+        <TurnFileMapProvider map={turnFileMap}>
         <div className={cn('space-y-2')}>
           {renderItems.map((item, itemIndex) => {
             if (item.type === 'block') {
@@ -578,6 +597,7 @@ export function AssistantTurnRenderer({ turn, allMessages, historicalTaskSubject
               : (errorContent.error?.message ?? '未知错误')}
           </div>
         )}
+        </TurnFileMapProvider>
       </MessageContent>
       {/* 文件改动汇总：流式结束后展示本轮所有 Edit/Write/MultiEdit/NotebookEdit 文件 */}
       {!isStreaming && (
@@ -1281,10 +1301,10 @@ export function getGroupId(group: MessageGroup): string {
     return messageIdCache.get(group.message)!
   }
   if (group.type === 'system') {
-    if (!messageIdCache.has(group.message)) {
-      messageIdCache.set(group.message, `system-${group.message.subtype ?? 'unknown'}-${++fallbackIdCounter}`)
+    if (!messageIdCache.has(group.identityMessage)) {
+      messageIdCache.set(group.identityMessage, `system-${group.identityMessage.subtype ?? 'unknown'}-${++fallbackIdCounter}`)
     }
-    return messageIdCache.get(group.message)!
+    return messageIdCache.get(group.identityMessage)!
   }
   // assistant-turn：取首条 assistant 消息的 uuid
   const first = group.assistantMessages[0]

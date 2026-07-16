@@ -206,6 +206,7 @@ export function normalizeAnthropicProviderUrl(baseUrl: string, provider: Provide
     || provider === 'xiaomi-token-plan'
     || provider === 'qwen-anthropic'
     || provider === 'zhipu-coding'
+    || provider === 'zhipu-coding-team'
     || provider === 'ark-coding-plan'
     || provider === 'deepseek'
     || provider === 'kimi-api'
@@ -227,6 +228,9 @@ export function normalizeAnthropicProviderUrl(baseUrl: string, provider: Provide
 export function resolveAnthropicMessagesUrl(baseUrl: string, provider: ProviderType): string {
   if (provider === 'anthropic-compatible') {
     return trimTrailingUrlPathSlash(baseUrl)
+  }
+  if (provider === 'xiaomi' || provider === 'xiaomi-token-plan') {
+    return `${new URL(baseUrl.trim()).origin}/anthropic/v1/messages`
   }
   if (hasPathSuffix(baseUrl, '/messages')) {
     return trimTrailingUrlPathSlash(baseUrl)
