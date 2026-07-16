@@ -969,6 +969,15 @@ export function AgentView({ sessionId }: { sessionId: string }): React.ReactElem
 
     clearStoppedByUser()
 
+    // 发起新一轮（含队列消息自动发送、后台续轮注入等非用户显式路径）时，
+    // 清除上一轮遗留的流式错误，避免正常输出后底部仍残留旧报错。
+    setAgentStreamErrors((prev) => {
+      if (!prev.has(sessionId)) return prev
+      const map = new Map(prev)
+      map.delete(sessionId)
+      return map
+    })
+
     // interrupt 由本函数读到的实时 streaming 决定，而非调用方传入的快照：
     // - streaming（本轮真正进行中）：注入前需软中断当前 turn
     // - backgroundWaiting（软空闲，无活跃 turn）：直接注入，无需中断
@@ -994,6 +1003,8 @@ export function AgentView({ sessionId }: { sessionId: string }): React.ReactElem
     clearStoppedByUser,
     hasAvailableModel,
     queueMessageIntoActiveAgent,
+    sessionId,
+    setAgentStreamErrors,
     startQueuedMessageRun,
     streaming,
   ])
