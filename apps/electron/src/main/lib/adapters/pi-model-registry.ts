@@ -32,6 +32,52 @@ interface PiModelDefaults {
 const ZERO_MODEL_COST: PiModelCost = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }
 export const DEFAULT_CONTEXT_WINDOW = 200_000
 const DEFAULT_MAX_TOKENS = 64_000
+const CODEX_BASE_URL = 'https://chatgpt.com/backend-api'
+const CODEX_MAX_TOKENS = 128_000
+const CODEX_56_CONTEXT_WINDOW = 1_050_000
+const CODEX_THINKING_LEVEL_MAP = { xhigh: 'xhigh', minimal: 'low' } as const
+
+const SUPPLEMENTAL_CODEX_MODELS: PiCatalogModel[] = [
+  {
+    id: 'gpt-5.6-sol',
+    name: 'GPT-5.6 Sol',
+    api: 'openai-codex-responses',
+    provider: 'openai-codex',
+    baseUrl: CODEX_BASE_URL,
+    reasoning: true,
+    thinkingLevelMap: CODEX_THINKING_LEVEL_MAP,
+    input: ['text', 'image'],
+    cost: { input: 5, output: 30, cacheRead: 0.5, cacheWrite: 0 },
+    contextWindow: CODEX_56_CONTEXT_WINDOW,
+    maxTokens: CODEX_MAX_TOKENS,
+  },
+  {
+    id: 'gpt-5.6-terra',
+    name: 'GPT-5.6 Terra',
+    api: 'openai-codex-responses',
+    provider: 'openai-codex',
+    baseUrl: CODEX_BASE_URL,
+    reasoning: true,
+    thinkingLevelMap: CODEX_THINKING_LEVEL_MAP,
+    input: ['text', 'image'],
+    cost: { input: 2.5, output: 15, cacheRead: 0.25, cacheWrite: 0 },
+    contextWindow: CODEX_56_CONTEXT_WINDOW,
+    maxTokens: CODEX_MAX_TOKENS,
+  },
+  {
+    id: 'gpt-5.6-luna',
+    name: 'GPT-5.6 Luna',
+    api: 'openai-codex-responses',
+    provider: 'openai-codex',
+    baseUrl: CODEX_BASE_URL,
+    reasoning: true,
+    thinkingLevelMap: CODEX_THINKING_LEVEL_MAP,
+    input: ['text', 'image'],
+    cost: { input: 1, output: 6, cacheRead: 0.1, cacheWrite: 0 },
+    contextWindow: CODEX_56_CONTEXT_WINDOW,
+    maxTokens: CODEX_MAX_TOKENS,
+  },
+]
 
 let piAiCompatPromise: Promise<PiAiCompat> | undefined
 
@@ -191,7 +237,60 @@ export function stripAgentSdkContextSuffix(modelId: string | undefined): string 
   return modelId?.replace(/\[1m\]$/i, '')
 }
 
+function mergeCodexModels(models: readonly PiCatalogModel[]): PiCatalogModel[] {
+  const merged = [...models]
+  const seen = new Set(merged.map((model) => model.id))
+  for (const supplemental of SUPPLEMENTAL_CODEX_MODELS) {
+    if (!seen.has(supplemental.id)) {
+      merged.push(supplemental)
+    }
+  }
+  return merged
+}
+
+export async function getCodexCatalogModels(): Promise<PiCatalogModel[]> {
+  const { getModels } = await loadPiAiCompat()
+  return mergeCodexModels(getModels('openai-codex'))
+}
+
+/**
+ * 为 ChatGPT (Codex) OAuth 渠道构建模型。
+ *
+ * openai-codex 是 Pi SDK 的内置 KnownProvider：模型目录、baseUrl 和
+ * `openai-codex-responses` 协议全部内置，无需（也不能）手工构造 models 或 baseUrl。
+ * 只需把 OAuth access token 作为 runtime key 注入到内置 provider 名 `openai-codex`
+ * 下，SDK 的 getApiKey 会按 model.provider 解析到它。
+ *
+ * 注意：这里的 input.apiKey 必须是编排层用 resolveCodexAccessToken 解析并按需
+ * 刷新后的 access token，而不是存储的凭据 JSON。
+ */
+async function buildCodexModel(sdk: PiSdk, input: PiAgentQueryOptions) {
+  const authStorage = sdk.AuthStorage.inMemory()
+  // 内置 codex 模型的 provider 字段即 'openai-codex'，token 必须设在该名下。
+  authStorage.setRuntimeApiKey('openai-codex', input.apiKey)
+  const registry = sdk.ModelRegistry.inMemory(authStorage)
+
+  const resolvedModelId = stripAgentSdkContextSuffix(input.model)
+  const codexModels = await getCodexCatalogModels()
+  const model = (resolvedModelId ? registry.find('openai-codex', resolvedModelId) : undefined)
+    ?? (resolvedModelId ? findCatalogModelById(codexModels, resolvedModelId) : undefined)
+    // 指定模型缺失时回退到首个内置 codex 模型，避免因模型 ID 漂移直接失败。
+    ?? registry.getAll().find((m) => m.provider === 'openai-codex')
+  if (!model) {
+    throw new Error('未找到可用的 ChatGPT (Codex) 模型，请确认已登录并升级 Pi 运行时')
+  }
+  return { authStorage, registry, model }
+}
+
+/** 列出 Pi SDK 内置的 ChatGPT (Codex) 模型 ID，供渲染层"模型拉取"使用。 */
+export async function listCodexModels(): Promise<{ id: string; name: string }[]> {
+  return (await getCodexCatalogModels()).map((m) => ({ id: m.id, name: m.name }))
+}
+
 export async function buildModel(sdk: PiSdk, input: PiAgentQueryOptions) {
+  if (input.provider === 'openai-codex') {
+    return buildCodexModel(sdk, input)
+  }
   const authStorage = sdk.AuthStorage.inMemory()
   const providerName = `proma-${input.provider}-${input.sessionId}`
   const resolvedApiKey = resolvePiApiKey(input.provider, input.apiKey)

@@ -19,6 +19,7 @@ import type {
   FetchModelsInput,
   FetchModelsResult,
   ChannelPlanQuotaResult,
+  CodexOAuthLoginResult,
   ConversationMeta,
   ChatMessage,
   ChatSendInput,
@@ -220,6 +221,12 @@ export interface ElectronAPI {
 
   /** 查询渠道订阅 Plan 额度 */
   getChannelPlanQuota: (channelId: string) => Promise<ChannelPlanQuotaResult>
+
+  /** 发起 ChatGPT (Codex) OAuth 登录，返回序列化凭据（作为 apiKey 存储） */
+  codexOAuthLogin: () => Promise<CodexOAuthLoginResult>
+
+  /** 取消进行中的 ChatGPT (Codex) OAuth 登录 */
+  codexOAuthCancel: () => Promise<void>
 
   // ===== 对话管理相关 =====
 
@@ -1173,6 +1180,14 @@ const electronAPI: ElectronAPI = {
 
   getChannelPlanQuota: (channelId: string) => {
     return ipcRenderer.invoke(CHANNEL_IPC_CHANNELS.GET_PLAN_QUOTA, channelId)
+  },
+
+  codexOAuthLogin: () => {
+    return ipcRenderer.invoke(CHANNEL_IPC_CHANNELS.CODEX_OAUTH_LOGIN)
+  },
+
+  codexOAuthCancel: () => {
+    return ipcRenderer.invoke(CHANNEL_IPC_CHANNELS.CODEX_OAUTH_CANCEL)
   },
 
   // 对话管理

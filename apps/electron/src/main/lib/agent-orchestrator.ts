@@ -37,7 +37,7 @@ import { isPromptTooLongError, isThinkingSignatureError, friendlyErrorMessage, m
 import type { PiAgentQueryOptions } from './adapters/pi-agent-adapter'
 import { isTransientNetworkError, isMalformedResponseError, isSessionNotFoundError } from './error-patterns'
 import { AgentEventBus } from './agent-event-bus'
-import { decryptApiKey, getChannelById, listChannels } from './channel-manager'
+import { decryptApiKey, getChannelById, listChannels, resolveCodexAccessToken } from './channel-manager'
 import { getAdapter, fetchTitle, normalizeAnthropicBaseUrlForSdk, getPromaUserAgent } from '@proma/core'
 import pkg from '../../../package.json' with { type: 'json' }
 import { getFetchFn } from './proxy-fetch'
@@ -945,8 +945,24 @@ export class AgentOrchestrator {
 
     let apiKey: string
     try {
-      apiKey = decryptApiKey(channelId)
-    } catch {
+      // ChatGPT (Codex) OAuth 渠道：apiKey 字段存的是加密凭据 JSON，需解析并按需刷新，
+      // 取出可用的 access token 传给 pi runtime；其余渠道直接解密 API Key。
+      apiKey = channel.provider === 'openai-codex'
+        ? await resolveCodexAccessToken(channelId)
+        : decryptApiKey(channelId)
+    } catch (err) {
+      if (channel.provider === 'openai-codex') {
+        reportPreflightError({
+          code: 'expired_oauth_token',
+          title: 'ChatGPT 登录已失效',
+          message: '无法刷新 ChatGPT 登录凭据，登录可能已过期或被撤销。请在设置中重新登录 ChatGPT。',
+          actions: [
+            { key: 's', label: '打开渠道设置', action: 'open_channel_settings' },
+          ],
+          canRetry: false,
+        })
+        return
+      }
       reportPreflightError({
         code: 'api_key_decrypt_failed',
         title: 'API Key 解密失败',

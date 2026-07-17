@@ -130,6 +130,8 @@ import {
   fetchModels,
   getChannelPlanQuota,
 } from './lib/channel-manager'
+import { loginCodexOAuth, cancelCodexOAuthLogin } from './lib/codex-oauth-service'
+import { serializeCodexCredentials } from '@proma/shared'
 import {
   listConversations,
   createConversation,
@@ -1163,6 +1165,36 @@ export function registerIpcHandlers(): void {
     CHANNEL_IPC_CHANNELS.GET_PLAN_QUOTA,
     async (_, channelId: string): Promise<import('@proma/shared').ChannelPlanQuotaResult> => {
       return getChannelPlanQuota(channelId)
+    }
+  )
+
+  // 发起 ChatGPT (Codex) OAuth 登录。登录在主进程执行（Pi SDK 用 Node crypto +
+  // 本地 :1455 回调服务）；成功后返回序列化的凭据 JSON（明文），由渲染层作为
+  // apiKey 传给 create/update，channel-manager 加密后存储——与现有 apiKey 明文回传模式一致。
+  ipcMain.handle(
+    CHANNEL_IPC_CHANNELS.CODEX_OAUTH_LOGIN,
+    async (): Promise<import('@proma/shared').CodexOAuthLoginResult> => {
+      try {
+        const credentials = await loginCodexOAuth()
+        return {
+          success: true,
+          credentials: serializeCodexCredentials(credentials),
+          ...(credentials.accountId ? { accountId: credentials.accountId } : {}),
+        }
+      } catch (error) {
+        return {
+          success: false,
+          message: error instanceof Error ? error.message : String(error),
+        }
+      }
+    }
+  )
+
+  // 取消进行中的 ChatGPT OAuth 登录流程
+  ipcMain.handle(
+    CHANNEL_IPC_CHANNELS.CODEX_OAUTH_CANCEL,
+    async (): Promise<void> => {
+      cancelCodexOAuthLogin()
     }
   )
 

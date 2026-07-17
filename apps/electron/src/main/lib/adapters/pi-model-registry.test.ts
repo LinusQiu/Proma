@@ -1,5 +1,13 @@
 import { describe, expect, test } from 'bun:test'
-import { buildPiRequestHeaders, requiresPromaUserAgent, resolvePiApiKey, stripAgentSdkContextSuffix } from './pi-model-registry'
+import {
+  buildModel,
+  buildPiRequestHeaders,
+  getCodexCatalogModels,
+  listCodexModels,
+  requiresPromaUserAgent,
+  resolvePiApiKey,
+  stripAgentSdkContextSuffix,
+} from './pi-model-registry'
 
 describe('Pi runtime 智谱团队版认证', () => {
   test('Given 团队版复合凭据 When resolvePiApiKey Then 提取出真实 apiKey', () => {
@@ -61,5 +69,45 @@ describe('Pi runtime 模型 ID [1m] 剥离', () => {
 
   test('Given undefined When strip Then 返回 undefined', () => {
     expect(stripAgentSdkContextSuffix(undefined)).toBeUndefined()
+  })
+})
+
+describe('ChatGPT Codex 模型目录补丁', () => {
+  test('Given Pi SDK 内置目录缺少 5.6 When listCodexModels Then 补齐 5.6 系列', async () => {
+    const models = await listCodexModels()
+    const ids = models.map((model) => model.id)
+
+    expect(ids).toContain('gpt-5.6-sol')
+    expect(ids).toContain('gpt-5.6-terra')
+    expect(ids).toContain('gpt-5.6-luna')
+    expect(new Set(ids).size).toBe(ids.length)
+  })
+
+  test('Given 选择 SDK 未收录的 5.6 模型 When buildModel Then 保留用户选择的模型 ID', async () => {
+    const sdk = await import('@earendil-works/pi-coding-agent')
+    const result = await buildModel(sdk, {
+      sessionId: 'session-1',
+      prompt: 'hi',
+      apiKey: 'oauth-access-token',
+      provider: 'openai-codex',
+      model: 'gpt-5.6-terra',
+      permissionMode: 'plan',
+      systemPrompt: 'system',
+      piAgentDir: '/tmp/pi-agent',
+      piSessionDir: '/tmp/pi-session',
+    })
+
+    expect(result.model.id).toBe('gpt-5.6-terra')
+    expect(result.model.provider).toBe('openai-codex')
+  })
+
+  test('Given Codex 补丁模型 When 读取目录 Then 使用 Codex Responses 协议和百万上下文', async () => {
+    const models = await getCodexCatalogModels()
+    const terra = models.find((model) => model.id === 'gpt-5.6-terra')
+
+    expect(terra?.api).toBe('openai-codex-responses')
+    expect(terra?.baseUrl).toBe('https://chatgpt.com/backend-api')
+    expect(terra?.contextWindow).toBe(1_050_000)
+    expect(terra?.maxTokens).toBe(128_000)
   })
 })
