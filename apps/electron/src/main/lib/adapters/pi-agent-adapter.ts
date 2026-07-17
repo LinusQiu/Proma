@@ -48,7 +48,6 @@ import {
   type AgentRuntimeGuard,
 } from '../agent-runtime-guards'
 import { createPromaAgentsFilesOverride } from './pi-resource-loader-overrides'
-import { createSubagentToolDefinition, isSubagentDelegationEnabled } from './pi-subagent-tool'
 import { mergeRuntimeEnv, type AgentRuntimeEnv } from '../agent-runtime-env'
 import {
   convertPiMessage,
@@ -105,8 +104,6 @@ export interface PiAgentQueryOptions extends AgentQueryInput {
   /** WebSocket 建连超时，单位毫秒；0 表示交给 Pi SDK 禁用超时 */
   websocketConnectTimeoutMs?: number
   runtimeEnv?: AgentRuntimeEnv
-  /** 子代理（Agent 工具）委派时使用的模型；DeepSeek 主模型下降级到 deepseek-v4-flash，缺省继承主模型 */
-  subagentModel?: string
   /** 手动压缩请求：走 pi 原生 session.compact()，而非把 /compact 当普通 prompt 发给模型 */
   compactRequest?: boolean
 }
@@ -1309,32 +1306,13 @@ export class PiAgentAdapter implements AgentProviderAdapter {
         ),
         ...buildPromaProductToolDefinitions(sdk, input.canUseTool),
         ...wrapCustomToolDefinitions(input.customTools, input.canUseTool),
-        // 子代理（Agent）委派工具：可插拔，单一开关控制。删除本段 + pi-subagent-tool.ts 即可彻底移除该能力。
-        ...(isSubagentDelegationEnabled()
-          ? [createSubagentToolDefinition({
-              sdk,
-              cwd,
-              parentInput: input,
-              emitChildMessage: (message) => queue.push(message),
-              buildModel: (childInput) => buildModel(sdk, childInput),
-              buildBuiltinTools: buildBuiltinToolDefinitions,
-              buildPromaProductTools: buildPromaProductToolDefinitions,
-              wrapCustomTools: wrapCustomToolDefinitions,
-              convertPiMessage,
-              createTextToolResult,
-              hasToolResult,
-              createSkillsOverride: createPromaSkillsOverride,
-              preparePromptWithSkills: preparePromptWithPromaSkills,
-              thinkingLevel: input.thinkingLevel ?? 'off',
-              buildRemoteConnectionSettings: buildPiRemoteConnectionSettings,
-              runtimeGuard,
-              installRuntimeGuardHooks,
-            })]
-          : []),
       ]
 
       const settingsManager = sdk.SettingsManager.inMemory({
-        compaction: { enabled: false },
+        // 使用 Pi SDK 原生压缩策略：
+        // - 手动压缩由 session.compact() 触发；
+        // - 自动压缩由 Pi 在上下文接近窗口上限或溢出恢复时触发。
+        compaction: { enabled: true },
         retry: { enabled: false },
         ...buildPiRemoteConnectionSettings(input),
       })

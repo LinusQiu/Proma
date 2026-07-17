@@ -110,4 +110,13 @@ describe('ChatGPT Codex 模型目录补丁', () => {
     expect(terra?.contextWindow).toBe(1_050_000)
     expect(terra?.maxTokens).toBe(128_000)
   })
+
+  test('Given Pi SDK 内置 Codex 模型上下文过旧 When 读取目录 Then 使用当前 OpenAI 规格覆盖', async () => {
+    const models = await getCodexCatalogModels()
+    const byId = new Map(models.map((model) => [model.id, model.contextWindow]))
+
+    expect(byId.get('gpt-5.4')).toBe(1_050_000)
+    expect(byId.get('gpt-5.4-mini')).toBe(400_000)
+    expect(byId.get('gpt-5.5')).toBe(1_050_000)
+  })
 })

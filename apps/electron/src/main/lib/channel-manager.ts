@@ -466,6 +466,23 @@ export async function resolveCodexAccessToken(channelId: string): Promise<string
 }
 
 /**
+ * 解析渠道运行时实际使用的认证 token。
+ *
+ * 普通渠道直接解密 API Key；ChatGPT (Codex) OAuth 渠道的 apiKey 字段存储的是
+ * OAuth 凭据 JSON，运行时必须取出 access token 并按需刷新。
+ */
+export async function resolveChannelRuntimeApiKey(channelId: string): Promise<string> {
+  const channel = getChannelById(channelId)
+  if (!channel) {
+    throw new Error(`渠道不存在: ${channelId}`)
+  }
+
+  return channel.provider === 'openai-codex'
+    ? resolveCodexAccessToken(channelId)
+    : decryptApiKey(channelId)
+}
+
+/**
  * 测试渠道连接
  *
  * 向供应商的 API 发送简单请求，验证 API Key 和连接是否有效。

@@ -791,7 +791,7 @@ export async function injectAgentCollaborationMcpServer(
       ),
       sdk.tool(
         'delegate_agent',
-        '创建一个真实可见的 Proma 协作子 Agent 会话来并行处理独立子任务。只用于长耗时、可并行、需要追踪的任务；简单搜索优先用内置 Agent/SubAgent。',
+        '创建一个真实可见的 Proma 协作子 Agent 会话来并行处理独立子任务。只用于长耗时、可并行、需要追踪的任务；简单搜索由父会话直接使用普通工具完成。',
         schemas.delegate,
         async (args) => {
           const parent = assertCanCreateDelegation(ctx)

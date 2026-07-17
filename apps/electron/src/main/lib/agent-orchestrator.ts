@@ -37,7 +37,7 @@ import { isPromptTooLongError, isThinkingSignatureError, friendlyErrorMessage, m
 import type { PiAgentQueryOptions } from './adapters/pi-agent-adapter'
 import { isTransientNetworkError, isMalformedResponseError, isSessionNotFoundError } from './error-patterns'
 import { AgentEventBus } from './agent-event-bus'
-import { decryptApiKey, getChannelById, listChannels, resolveCodexAccessToken } from './channel-manager'
+import { decryptApiKey, getChannelById, listChannels, resolveChannelRuntimeApiKey, resolveCodexAccessToken } from './channel-manager'
 import { getAdapter, fetchTitle, normalizeAnthropicBaseUrlForSdk, getPromaUserAgent } from '@proma/core'
 import pkg from '../../../package.json' with { type: 'json' }
 import { getFetchFn } from './proxy-fetch'
@@ -54,7 +54,6 @@ import type { PermissionResult, CanUseToolOptions } from './agent-permission-ser
 import { askUserService } from './agent-ask-user-service'
 import { exitPlanService, type ExitPlanPermissionResult } from './agent-exit-plan-service'
 import { removePromaAutoCompactSettings } from './agent-auto-compact-settings'
-import { applyAgentModelRoutingToEnv, resolveAgentModelRouting } from './agent-model-routing'
 import { validateToolInput } from './agent-tool-input-validator'
 import { estimateTokenCount, WRITE_CONTENT_TOKEN_THRESHOLD } from './agent-tool-token-estimator'
 import { injectBuiltinMcpServers } from './builtin-mcp/registry'
@@ -63,6 +62,7 @@ import type { AgentRuntimeEnv } from './agent-runtime-env'
 import { isVisibleRunMessage } from './agent-run-message-visibility'
 import { applyAgentSdkAuthEnv } from './agent-sdk-auth-env'
 import { getAgentSdkMaxOutputTokens } from './agent-sdk-output-limits'
+import { createFallbackTitle, sanitizeGeneratedTitle, TITLE_PROMPT } from './title-generation'
 
 // ===== 类型定义 =====
 
@@ -318,12 +318,6 @@ function resolveSDKCliPath(): string {
 
   return binaryPath
 }
-
-/** 标题生成 Prompt */
-const TITLE_PROMPT = '根据用户的第一条消息，生成一个简短的对话标题（10字以内）。只输出标题，不要有任何其他内容、标点符号或引号。\n\n用户消息：'
-
-/** 标题最大长度 */
-const MAX_TITLE_LENGTH = 20
 
 /** 默认会话标题（用于判断是否需要自动生成） */
 const DEFAULT_SESSION_TITLE = '新 Agent 会话'
@@ -608,7 +602,13 @@ export class AgentOrchestrator {
         return null
       }
 
-      const apiKey = decryptApiKey(channelId)
+      if (channel.provider === 'openai-codex') {
+        const fallbackTitle = createFallbackTitle(userMessage)
+        console.log('[Agent 标题生成] ChatGPT OAuth 渠道使用本地标题:', fallbackTitle)
+        return fallbackTitle
+      }
+
+      const apiKey = await resolveChannelRuntimeApiKey(channelId)
       const providerAdapter = getAdapter(channel.provider)
       const request = providerAdapter.buildTitleRequest({
         baseUrl: channel.baseUrl,
@@ -625,8 +625,7 @@ export class AgentOrchestrator {
         return null
       }
 
-      const cleaned = title.trim().replace(/^["'""''「《]+|["'""''」》]+$/g, '').trim()
-      const result = cleaned.slice(0, MAX_TITLE_LENGTH) || null
+      const result = sanitizeGeneratedTitle(title)
 
       console.log(`[Agent 标题生成] 生成标题成功: "${result}"`)
       return result
@@ -1049,10 +1048,8 @@ export class AgentOrchestrator {
       process.env.ANTHROPIC_BASE_URL = normalizeAnthropicBaseUrlForSdk(channel.baseUrl)
     }
 
-    const modelRouting = resolveAgentModelRouting({ modelId: modelId || DEFAULT_MODEL_ID, provider: channel.provider })
     const proxyUrl = await getEffectiveProxyUrl()
     const sdkEnv = await this.buildSdkEnv(apiKey, channel.baseUrl, channel.provider, modelId || DEFAULT_MODEL_ID)
-    applyAgentModelRoutingToEnv(sdkEnv, modelRouting, channel.provider)
 
     // 4. 读取已有的 SDK session ID（用于 resume）
     let existingSdkSessionId = sessionMeta?.sdkSessionId
@@ -1337,7 +1334,7 @@ export class AgentOrchestrator {
       // Plan 模式下允许的只读工具（不包含 Write/Edit/Bash 等写操作）
       const PLAN_MODE_ALLOWED_TOOLS = new Set([
         'Read', 'Glob', 'Grep', 'WebSearch', 'WebFetch',
-        'Agent', 'TodoRead', 'TodoWrite', 'TaskOutput',
+        'TodoRead', 'TodoWrite', 'TaskOutput',
         'TaskCreate', 'TaskUpdate', 'TaskList', 'TaskGet',
         'ListMcpResourcesTool', 'ReadMcpResourceTool',
       ])
@@ -1480,12 +1477,10 @@ export class AgentOrchestrator {
       }
 
       // 13. 构建 Adapter 查询选项
-      // 检测用户选用的模型是否为 Claude 系列，决定 SubAgent 是否使用独立模型分层
-      const selectedModelId = modelId || DEFAULT_MODEL_ID
-      const claudeAvailable = selectedModelId.toLowerCase().includes('claude')
       const maxTurns = appSettings.agentMaxTurns && appSettings.agentMaxTurns > 0
         ? appSettings.agentMaxTurns
         : undefined
+      const selectedModelId = modelId || DEFAULT_MODEL_ID
       const allAdditionalDirectories = collectAttachedDirectories({
         extraDirs: additionalDirectories,
         sessionMeta,
@@ -1497,8 +1492,6 @@ export class AgentOrchestrator {
         workspaceSlug,
         sessionId,
         permissionMode: initialPermissionMode,
-        claudeAvailable,
-        deepSeekSubagentModel: modelRouting.subagentModel,
         collaborationAvailable,
       }) + (automationContext ? `\n\n## 定时任务执行上下文\n\n${automationContext}` : '')
       const handleSessionId = (sdkSessionId: string): void => {
@@ -1563,6 +1556,7 @@ export class AgentOrchestrator {
         ...(allAdditionalDirectories.length > 0 && { additionalDirectories: allAdditionalDirectories }),
         ...(workspaceSlug ? { additionalSkillPaths: [getWorkspaceSkillsDir(workspaceSlug)] } : {}),
         ...(mentionedSkills?.length ? { skillMentions: mentionedSkills } : {}),
+        ...(isCompactCommand ? { compactRequest: true } : {}),
         thinkingLevel: resolvePiThinkingLevel(appSettings),
         ...(appSettings.agentMaxBudgetUsd != null && appSettings.agentMaxBudgetUsd > 0 && {
           maxBudgetUsd: appSettings.agentMaxBudgetUsd,
@@ -1590,7 +1584,7 @@ export class AgentOrchestrator {
         allowDangerouslySkipPermissions: !canUseTool,
         canUseTool,
         // claude_code preset 提供基础环境信息（platform/shell/OS/git/model/知识截止日期等）
-        // buildSystemPrompt 追加 Proma 特有指令（角色定义、SubAgent 策略、工作区信息等）
+        // buildSystemPrompt 追加 Proma 特有指令（角色定义、子 Agent 委派策略、工作区信息等）
         systemPrompt: {
           type: 'preset',
           preset: 'claude_code',
@@ -1614,6 +1608,9 @@ export class AgentOrchestrator {
         ...(appSettings.agentMaxBudgetUsd != null && appSettings.agentMaxBudgetUsd > 0 && {
           maxBudgetUsd: appSettings.agentMaxBudgetUsd,
         }),
+        // Proma 统一使用 collaboration 派生子会话承载子 Agent 委派，避免 SDK 临时
+        // Agent/Task 与 Proma 会话体系分裂。
+        disallowedTools: ['Agent', 'Task'],
         onStderr: (data: string) => {
           stderrChunks.push(data)
           console.error(`[Agent SDK stderr] ${data}`)

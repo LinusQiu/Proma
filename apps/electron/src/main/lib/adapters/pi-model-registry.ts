@@ -20,6 +20,7 @@ type PiAiCompat = typeof import('@earendil-works/pi-ai/compat')
 type PiCatalogModel = Model<Api>
 type PiModelCost = PiCatalogModel['cost']
 type PiRequestHeaders = Record<string, string>
+type PiCatalogModelPatch = Pick<PiCatalogModel, 'id'> & Partial<PiCatalogModel>
 
 interface PiModelDefaults {
   reasoning: boolean
@@ -34,10 +35,23 @@ export const DEFAULT_CONTEXT_WINDOW = 200_000
 const DEFAULT_MAX_TOKENS = 64_000
 const CODEX_BASE_URL = 'https://chatgpt.com/backend-api'
 const CODEX_MAX_TOKENS = 128_000
+const CODEX_54_MINI_CONTEXT_WINDOW = 400_000
 const CODEX_56_CONTEXT_WINDOW = 1_050_000
 const CODEX_THINKING_LEVEL_MAP = { xhigh: 'xhigh', minimal: 'low' } as const
 
-const SUPPLEMENTAL_CODEX_MODELS: PiCatalogModel[] = [
+const CODEX_MODEL_PATCHES: PiCatalogModelPatch[] = [
+  {
+    id: 'gpt-5.4',
+    contextWindow: CODEX_56_CONTEXT_WINDOW,
+  },
+  {
+    id: 'gpt-5.4-mini',
+    contextWindow: CODEX_54_MINI_CONTEXT_WINDOW,
+  },
+  {
+    id: 'gpt-5.5',
+    contextWindow: CODEX_56_CONTEXT_WINDOW,
+  },
   {
     id: 'gpt-5.6-sol',
     name: 'GPT-5.6 Sol',
@@ -238,14 +252,32 @@ export function stripAgentSdkContextSuffix(modelId: string | undefined): string 
 }
 
 function mergeCodexModels(models: readonly PiCatalogModel[]): PiCatalogModel[] {
-  const merged = [...models]
-  const seen = new Set(merged.map((model) => model.id))
-  for (const supplemental of SUPPLEMENTAL_CODEX_MODELS) {
-    if (!seen.has(supplemental.id)) {
-      merged.push(supplemental)
+  const merged = models.map((model) => ({ ...model }))
+  const indexById = new Map(merged.map((model, index) => [model.id, index]))
+  for (const patch of CODEX_MODEL_PATCHES) {
+    const existingIndex = indexById.get(patch.id)
+    const existing = existingIndex !== undefined ? merged[existingIndex] : undefined
+    if (existingIndex !== undefined && existing) {
+      merged[existingIndex] = { ...existing, ...patch }
+    } else if (isCompleteCatalogModel(patch)) {
+      indexById.set(patch.id, merged.length)
+      merged.push(patch)
     }
   }
   return merged
+}
+
+function isCompleteCatalogModel(model: PiCatalogModelPatch): model is PiCatalogModel {
+  return Boolean(
+    model.name
+      && model.api
+      && model.provider
+      && model.baseUrl
+      && model.input
+      && model.cost
+      && model.contextWindow
+      && model.maxTokens,
+  )
 }
 
 export async function getCodexCatalogModels(): Promise<PiCatalogModel[]> {
