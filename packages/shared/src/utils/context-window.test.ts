@@ -33,6 +33,7 @@ describe('模型上下文窗口', () => {
     expect(resolveAgentSdkModelId('mimo-v2.5', 'xiaomi-token-plan')).toBe('mimo-v2.5[1m]')
     expect(resolveAgentSdkModelId('MiniMax-M3', 'minimax')).toBe('MiniMax-M3[1m]')
     expect(resolveAgentSdkModelId('k3', 'kimi-api')).toBe('k3[1m]')
+    expect(resolveAgentSdkModelId('k3', 'kimi-coding')).toBe('k3[1m]')
     expect(resolveAgentSdkModelId('k3', 'ark-coding-plan')).toBe('k3[1m]')
   })
 

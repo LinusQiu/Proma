@@ -353,6 +353,7 @@ export function ChannelForm({ channel, onSaved, onAgentEligibilityChange, onCanc
         ])
       } else if (p === 'kimi-coding') {
         setModels([
+          { id: 'k3', name: 'Kimi K3', enabled: true },
           { id: 'kimi-for-coding', name: 'Kimi for Coding', enabled: true },
         ])
       } else if (p === 'zhipu' || p === 'zhipu-coding' || p === 'zhipu-coding-team') {

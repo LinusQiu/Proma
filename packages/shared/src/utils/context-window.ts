@@ -63,6 +63,7 @@ const AGENT_SDK_1M_CONTEXT_PROVIDER_RULES: Partial<Record<ProviderType, readonly
     ...AGENT_SDK_1M_CONTEXT_RULES.minimax,
   ],
   'kimi-api': AGENT_SDK_1M_CONTEXT_RULES.kimi,
+  'kimi-coding': AGENT_SDK_1M_CONTEXT_RULES.kimi,
 }
 
 const AGENT_SDK_1M_CONTEXT_DISPLAY_RULES = Object.values(AGENT_SDK_1M_CONTEXT_RULES).flat()
