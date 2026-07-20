@@ -137,3 +137,52 @@ describe('linkify 合成链接防护', () => {
     expect(html).toContain('foo@bar.com')
   })
 })
+
+describe('XSS 防护（markdown-it 转义层）', () => {
+  // bun 测试环境无 DOM，DOMPurify 净化不执行。
+  // 以下测试验证 markdown-it 自定义渲染器将原始 HTML 转义为 data 属性，
+  // 不生成实际的可执行 HTML 元素。
+  // DOMPurify 净化（enhanceMarkdownHtml + NodeView 渲染层）在 Electron 渲染进程中生效。
+
+  test('原始 <script> 标签被转义，不生成实际 script 元素', () => {
+    const html = markdownToHtml('hello <script>alert(1)</script> world')
+    expect(html).not.toContain('<script>')
+    expect(html).toContain('&lt;script&gt;')
+    expect(html).toContain('hello')
+    expect(html).toContain('world')
+  })
+
+  test('原始 <img onerror> 被转义，不生成实际 img 元素', () => {
+    const html = markdownToHtml('<img src=x onerror="alert(1)">')
+    expect(html).not.toContain('<img')
+    expect(html).toContain('data-type="raw-html-block"')
+  })
+
+  test('原始 <a href="javascript:"> 被转义，不生成实际链接元素', () => {
+    const html = markdownToHtml('<a href="javascript:alert(1)">click</a>')
+    expect(html).not.toContain('<a ')
+    expect(html).toContain('data-type="raw-html-inline"')
+  })
+
+  test('原始 <iframe> 被转义，不生成实际 iframe 元素（Obsidian 本地文件泄露教训）', () => {
+    const html = markdownToHtml('<iframe src="app://local/C:/Users/secret.txt"></iframe>')
+    expect(html).not.toContain('<iframe')
+  })
+
+  test('原始 <object> 和 <embed> 被转义', () => {
+    const html = markdownToHtml('<object data="evil.swf"></object><embed src="evil.swf">')
+    expect(html).not.toContain('<object')
+    expect(html).not.toContain('<embed')
+  })
+
+  test('保留 math block 的 data 属性', () => {
+    const html = markdownToHtml('$$\nE=mc^2\n$$')
+    expect(html).toContain('data-type="math-block"')
+    expect(html).toContain('data-latex')
+  })
+
+  test('保留 details/summary 块', () => {
+    const html = markdownToHtml('<details><summary>Click</summary>\ncontent\n</details>')
+    expect(html).toContain('data-type="raw-html-block"')
+  })
+})

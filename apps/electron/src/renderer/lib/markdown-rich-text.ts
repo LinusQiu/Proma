@@ -1,4 +1,5 @@
 import MarkdownIt from 'markdown-it'
+import { sanitizeMarkdownHtml } from './markdown-sanitize'
 
 const VIDEO_EXT_RE = /\.(mp4|webm|ogg|ogv|mov|m4v)(?:[?#].*)?$/i
 const PREVIEW_BLOCK_RE = /^<div\s+[^>]*data-type=(["'])(?:raw-html-block|math-block)\1/i
@@ -334,7 +335,7 @@ function enhanceMarkdownHtml(html: string): string {
   if (typeof document === 'undefined') return html
 
   const root = document.createElement('div')
-  root.innerHTML = html
+  root.innerHTML = sanitizeMarkdownHtml(html)
 
   for (const li of Array.from(root.querySelectorAll('li'))) {
     const first = li.firstChild
@@ -366,7 +367,7 @@ export function htmlToMarkdown(html: string, options?: { skipMarkdownEscape?: bo
   if (!html || html === '<p></p>') return ''
 
   const div = document.createElement('div')
-  div.innerHTML = html
+  div.innerHTML = sanitizeMarkdownHtml(html)
 
   function processNode(node: Node, context: 'normal' | 'code' = 'normal'): string {
     if (node.nodeType === Node.TEXT_NODE) {

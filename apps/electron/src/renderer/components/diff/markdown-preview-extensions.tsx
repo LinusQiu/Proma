@@ -12,7 +12,7 @@ import { TableCell } from '@tiptap/extension-table-cell'
 import { TableHeader } from '@tiptap/extension-table-header'
 import { createRoot } from 'react-dom/client'
 import type { Root } from 'react-dom/client'
-import DOMPurify from 'dompurify'
+import { sanitizeMarkdownHtml } from '../../lib/markdown-sanitize'
 import katex from 'katex'
 import { highlightCode, highlightToTokens, getDisplayName } from '@proma/core'
 import { MermaidBlock } from '@proma/ui'
@@ -352,22 +352,7 @@ function isExternalUrl(src: string): boolean {
   return /^(?:https?:|data:|blob:|file:|proma-file:)/i.test(src)
 }
 
-function sanitizeHtml(html: string): string {
-  return DOMPurify.sanitize(html, {
-    ADD_TAGS: ['video', 'source', 'summary', 'details'],
-    ADD_ATTR: [
-      'align',
-      'colspan',
-      'controls',
-      'loading',
-      'open',
-      'poster',
-      'rowspan',
-      'src',
-      'target',
-    ],
-  })
-}
+
 
 function setClass(el: HTMLElement, className: string): void {
   el.className = className
@@ -442,7 +427,7 @@ function createStaticHtmlView(
   setClass(dom, options.className)
 
   const render = (node: ProseMirrorNode) => {
-    dom.innerHTML = sanitizeHtml(options.getHtml(node))
+    dom.innerHTML = sanitizeMarkdownHtml(options.getHtml(node))
   }
 
   render(initialNode)
