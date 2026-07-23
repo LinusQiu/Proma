@@ -22,6 +22,28 @@ describe('third-party GPT-5 capability extrapolation', () => {
   })
 })
 
+describe('Pi custom provider 模型能力解析', () => {
+  test('Given MiniMax-M3 shares its display name with Fireworks When resolved through a custom channel Then exact ID metadata keeps image input', async () => {
+    const sdk = await import('@earendil-works/pi-coding-agent')
+    const result = await buildModel(sdk, {
+      sessionId: 'session-custom-minimax-m3',
+      prompt: 'hi',
+      apiKey: 'test-key',
+      provider: 'custom',
+      baseUrl: 'https://example.com/v1',
+      model: 'minimax-m3',
+      permissionMode: 'plan',
+      systemPrompt: 'system',
+      piAgentDir: '/tmp/pi-agent',
+      piSessionDir: '/tmp/pi-session',
+    })
+
+    expect(result.model.input).toEqual(['text', 'image'])
+    expect(result.model.contextWindow).toBe(1_000_000)
+    expect(result.model.maxTokens).toBe(128_000)
+  })
+})
+
 describe('Pi runtime 火山方舟 GLM-5.2 输出限制', () => {
   test.each([
     ['doubao', 'https://ark.cn-beijing.volces.com/api/v3'],

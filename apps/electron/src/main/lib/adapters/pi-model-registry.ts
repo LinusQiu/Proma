@@ -230,10 +230,14 @@ function candidatePiProviders(provider: ProviderType): KnownProvider[] {
   }
 }
 
-function findCatalogModelById(models: readonly PiCatalogModel[], modelId: string): PiCatalogModel | undefined {
+function findCatalogModelByExactId(models: readonly PiCatalogModel[], modelId: string): PiCatalogModel | undefined {
   const normalized = modelId.toLowerCase()
-  return models.find((model) =>
-    model.id.toLowerCase() === normalized || model.name.toLowerCase() === normalized)
+  return models.find((model) => model.id.toLowerCase() === normalized)
+}
+
+function findCatalogModelsByName(models: readonly PiCatalogModel[], modelId: string): PiCatalogModel[] {
+  const normalized = modelId.toLowerCase()
+  return models.filter((model) => model.name.toLowerCase() === normalized)
 }
 
 async function getCatalogModels(provider: KnownProvider): Promise<readonly PiCatalogModel[]> {
@@ -246,21 +250,36 @@ async function getCatalogModels(provider: KnownProvider): Promise<readonly PiCat
 }
 
 async function findPiCatalogModel(provider: ProviderType, modelId: string): Promise<PiCatalogModel | undefined> {
-  const checked = new Set<string>()
-  for (const candidate of candidatePiProviders(provider)) {
-    checked.add(candidate)
-    const model = findCatalogModelById(await getCatalogModels(candidate as KnownProvider), modelId)
+  const providerCandidates = candidatePiProviders(provider)
+  const { getProviders } = await loadPiAiCompat()
+  const remainingProviders = getProviders().filter((candidate) => !providerCandidates.includes(candidate))
+  const catalogs = new Map<string, readonly PiCatalogModel[]>()
+  const getCachedCatalog = async (candidate: KnownProvider): Promise<readonly PiCatalogModel[]> => {
+    const cached = catalogs.get(candidate)
+    if (cached) return cached
+    const models = await getCatalogModels(candidate)
+    catalogs.set(candidate, models)
+    return models
+  }
+
+  // 精确模型 ID 比展示名更可靠，必须先完成 ID 匹配；否则 custom 渠道
+  // 可能先撞上其它 provider 的同名展示条目（如
+  // Fireworks MiniMax-M3 的 text-only 条目），污染图片和 token 能力。
+  for (const candidate of [...providerCandidates, ...remainingProviders]) {
+    const model = findCatalogModelByExactId(await getCachedCatalog(candidate), modelId)
     if (model) return model
   }
 
-  // 兼容自定义代理和 Anthropic-compatible：模型 id 常常仍是官方 id。
-  const { getProviders } = await loadPiAiCompat()
-  for (const candidate of getProviders()) {
-    if (checked.has(candidate)) continue
-    const model = findCatalogModelById(await getCatalogModels(candidate), modelId)
+  // 保留展示名兼容：优先使用当前渠道的候选 provider；其它 provider 仅在全局
+  // 唯一命中时回退，绝不让 provider 枚举顺序决定模型能力。
+  for (const candidate of providerCandidates) {
+    const [model] = findCatalogModelsByName(await getCachedCatalog(candidate), modelId)
     if (model) return model
   }
-  return undefined
+
+  const nameMatches = (await Promise.all(remainingProviders.map(async (candidate) =>
+    findCatalogModelsByName(await getCachedCatalog(candidate), modelId)))).flat()
+  return nameMatches.length === 1 ? nameMatches[0] : undefined
 }
 
 async function resolvePiModelDefaults(input: PiAgentQueryOptions): Promise<PiModelDefaults> {
@@ -409,7 +428,9 @@ export async function buildCodexModel(sdk: PiSdk, input: CodexModelInput) {
   const resolvedModelId = stripAgentSdkContextSuffix(input.model)
   const codexModels = await getCodexCatalogModels()
   const model = (resolvedModelId ? modelRuntime.getModel('openai-codex', resolvedModelId) : undefined)
-    ?? (resolvedModelId ? findCatalogModelById(codexModels, resolvedModelId) : undefined)
+    ?? (resolvedModelId
+      ? findCatalogModelByExactId(codexModels, resolvedModelId) ?? findCatalogModelsByName(codexModels, resolvedModelId)[0]
+      : undefined)
     // 指定模型缺失时回退到首个内置 codex 模型，避免因模型 ID 漂移直接失败。
     ?? modelRuntime.getModels('openai-codex')[0]
   if (!model) {
