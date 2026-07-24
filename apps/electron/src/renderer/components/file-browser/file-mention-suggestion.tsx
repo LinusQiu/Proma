@@ -43,6 +43,11 @@ export function createFileMentionSuggestion(
         return []
       }
       missingWorkspaceToastShown = false
+      const normalizedQuery = query?.trim() ?? ''
+      if (!normalizedQuery) {
+        lastResult = null
+        return []
+      }
 
       try {
         const additionalPaths = attachedDirsRef?.current ?? []
@@ -50,8 +55,8 @@ export function createFileMentionSuggestion(
 
         const result = await window.electronAPI.searchWorkspaceFiles(
           wsPath,
-          query ?? '',
-          200,
+          normalizedQuery,
+          80,
           additionalPaths.length > 0 ? additionalPaths : undefined,
           sessionPaths.length > 0 ? sessionPaths : undefined,
         )
@@ -73,18 +78,24 @@ export function createFileMentionSuggestion(
       let editorRef: SuggestionProps<FileIndexEntry>['editor'] | null = null
 
       function splitEntries(result: FileSearchResult | null) {
+        const matchedEntries = result?.entries ?? []
         return {
           sessionEntries: result?.sessionEntries ?? [],
           workspaceEntries: result?.workspaceEntries ?? [],
+          sessionMatchedPaths: matchedEntries.filter((entry) => entry.source === 'session').map((entry) => entry.path),
+          workspaceMatchedPaths: matchedEntries.filter((entry) => entry.source === 'workspace').map((entry) => entry.path),
         }
       }
 
       function createRenderer(props: SuggestionProps<FileIndexEntry>) {
-        const { sessionEntries, workspaceEntries } = splitEntries(lastResult)
+        const { sessionEntries, workspaceEntries, sessionMatchedPaths, workspaceMatchedPaths } = splitEntries(lastResult)
         renderer = new ReactRenderer(FileMentionList, {
           props: {
             sessionEntries,
             workspaceEntries,
+            sessionMatchedPaths,
+            workspaceMatchedPaths,
+            hasQuery: Boolean(props.query?.trim()),
             onSelect: (item: { name: string; path: string; type: 'file' | 'dir' }) => {
               props.command({ id: item.path, label: item.name })
             },
@@ -164,10 +175,13 @@ export function createFileMentionSuggestion(
           if (mentionItemCountRef) mentionItemCountRef.current = props.items.length
           latestClientRect = props.clientRect
 
-          const { sessionEntries, workspaceEntries } = splitEntries(lastResult)
+          const { sessionEntries, workspaceEntries, sessionMatchedPaths, workspaceMatchedPaths } = splitEntries(lastResult)
           renderer?.updateProps({
             sessionEntries,
             workspaceEntries,
+            sessionMatchedPaths,
+            workspaceMatchedPaths,
+            hasQuery: Boolean(props.query?.trim()),
             onSelect: (item: { name: string; path: string; type: 'file' | 'dir' }) => {
               props.command({ id: item.path, label: item.name })
             },

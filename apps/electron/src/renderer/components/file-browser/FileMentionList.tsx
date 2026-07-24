@@ -49,7 +49,7 @@ class MentionErrorBoundary extends React.Component<
 
 // ===== 树形结构类型 =====
 
-interface FileTreeNode {
+export interface FileTreeNode {
   name: string
   path: string
   type: 'file' | 'dir'
@@ -64,6 +64,9 @@ interface FileTreeNode {
 export interface FileMentionListProps {
   sessionEntries: FileIndexEntry[]
   workspaceEntries: FileIndexEntry[]
+  sessionMatchedPaths?: string[]
+  workspaceMatchedPaths?: string[]
+  hasQuery?: boolean
   onSelect: (item: { name: string; path: string; type: 'file' | 'dir' }) => void
 }
 
@@ -74,12 +77,16 @@ export interface FileMentionRef {
 // ===== 工具函数 =====
 
 /** 从扁平条目列表构建树 */
-function buildTree(entries: FileIndexEntry[]): FileTreeNode[] {
+function toTreePath(pathValue: string): string {
+  return pathValue.replace(/\\/g, '/')
+}
+
+export function buildFileMentionTree(entries: FileIndexEntry[]): FileTreeNode[] {
   const pathMap = new Map<string, FileTreeNode>()
   const roots: FileTreeNode[] = []
 
   for (const entry of entries) {
-    pathMap.set(entry.path, {
+    pathMap.set(toTreePath(entry.path), {
       name: entry.name,
       path: entry.path,
       type: entry.type,
@@ -91,9 +98,10 @@ function buildTree(entries: FileIndexEntry[]): FileTreeNode[] {
   }
 
   for (const entry of entries) {
-    const node = pathMap.get(entry.path)!
-    const lastSlash = entry.path.lastIndexOf('/')
-    const parentPath = lastSlash === -1 ? '' : entry.path.slice(0, lastSlash)
+    const treePath = toTreePath(entry.path)
+    const node = pathMap.get(treePath)!
+    const lastSlash = treePath.lastIndexOf('/')
+    const parentPath = lastSlash === -1 ? '' : treePath.slice(0, lastSlash)
 
     if (parentPath && pathMap.has(parentPath)) {
       pathMap.get(parentPath)!.children.push(node)
@@ -140,22 +148,66 @@ function flattenVisible(nodes: FileTreeNode[]): FileTreeNode[] {
   return result
 }
 
+function getAutoExpandedPaths(nodes: FileTreeNode[], matchedPaths: Set<string>): Set<string> {
+  const autoExpandedPaths = new Set<string>()
+
+  function visit(node: FileTreeNode): boolean {
+    const hasMatchingChild = node.children.some(visit)
+    const isMatch = matchedPaths.has(node.path)
+    if (hasMatchingChild && node.type === 'dir') autoExpandedPaths.add(node.path)
+    return isMatch || hasMatchingChild
+  }
+
+  for (const node of nodes) visit(node)
+  return autoExpandedPaths
+}
+
+export function findPreferredMatchIndex(nodes: FileTreeNode[], matchedPaths: string[]): number {
+  for (const matchedPath of matchedPaths) {
+    const index = nodes.findIndex((node) => node.path === matchedPath)
+    if (index >= 0) return index
+  }
+  return -1
+}
+
 // ===== 组件 =====
 
 export const FileMentionList = React.forwardRef<FileMentionRef, FileMentionListProps>(
-  function FileMentionList({ sessionEntries, workspaceEntries, onSelect }, ref) {
+  function FileMentionList({
+    sessionEntries,
+    workspaceEntries,
+    sessionMatchedPaths = [],
+    workspaceMatchedPaths = [],
+    hasQuery = true,
+    onSelect,
+  }, ref) {
     // 构建树（仅在条目变化时重建）
     const sessionTree = React.useMemo(
-      () => buildTree(sessionEntries),
+      () => buildFileMentionTree(sessionEntries),
       [sessionEntries],
     )
     const workspaceTree = React.useMemo(
-      () => buildTree(workspaceEntries),
+      () => buildFileMentionTree(workspaceEntries),
       [workspaceEntries],
     )
 
     // 折叠/展开状态（用 expandedPaths Set 管理）
     const [expandedPaths, setExpandedPaths] = React.useState<Set<string>>(new Set())
+    const sessionMatchedPathSet = React.useMemo(() => new Set(sessionMatchedPaths), [sessionMatchedPaths])
+    const workspaceMatchedPathSet = React.useMemo(() => new Set(workspaceMatchedPaths), [workspaceMatchedPaths])
+    const sessionAutoExpandedPaths = React.useMemo(
+      () => getAutoExpandedPaths(sessionTree, sessionMatchedPathSet),
+      [sessionTree, sessionMatchedPathSet],
+    )
+    const workspaceAutoExpandedPaths = React.useMemo(
+      () => getAutoExpandedPaths(workspaceTree, workspaceMatchedPathSet),
+      [workspaceTree, workspaceMatchedPathSet],
+    )
+
+    // 搜索结果更新时自动展开命中项的祖先，避免 Enter 默认引用到补齐的目录节点。
+    React.useEffect(() => {
+      setExpandedPaths(new Set([...sessionAutoExpandedPaths, ...workspaceAutoExpandedPaths]))
+    }, [sessionAutoExpandedPaths, workspaceAutoExpandedPaths])
 
     // 将 expanded 状态注入树节点
     const sessionTreeWithState = React.useMemo(() => {
@@ -195,10 +247,20 @@ export const FileMentionList = React.forwardRef<FileMentionRef, FileMentionListP
     const [selectedIndex, setSelectedIndex] = React.useState(0)
     const containerRef = React.useRef<HTMLDivElement>(null)
 
-    // 条目变化或展开状态变化时重置/修正索引
+    // 条目变化或展开状态变化时默认选中最相关的匹配项，而不是为树补齐的父目录。
     React.useEffect(() => {
+      const sessionMatchIndex = findPreferredMatchIndex(sessionVisible, sessionMatchedPaths)
+      if (sessionMatchIndex >= 0) {
+        setSelectedIndex(sessionMatchIndex)
+        return
+      }
+      const workspaceMatchIndex = findPreferredMatchIndex(workspaceVisible, workspaceMatchedPaths)
+      if (workspaceMatchIndex >= 0) {
+        setSelectedIndex(sessionVisible.length + workspaceMatchIndex)
+        return
+      }
       setSelectedIndex((prev) => (totalItems > 0 ? Math.min(prev, totalItems - 1) : 0))
-    }, [sessionEntries, workspaceEntries, totalItems])
+    }, [sessionEntries, workspaceEntries, sessionVisible, workspaceVisible, sessionMatchedPaths, workspaceMatchedPaths, totalItems])
 
     // 滚动选中项到可见区域
     React.useEffect(() => {
@@ -306,7 +368,7 @@ export const FileMentionList = React.forwardRef<FileMentionRef, FileMentionListP
             <span>文件</span>
             <span className="font-normal text-muted-foreground">Esc 关闭 · Enter 选中</span>
           </div>
-          <div className="p-2 text-[11px] text-muted-foreground">无匹配文件</div>
+          <div className="p-2 text-[11px] text-muted-foreground">{hasQuery ? '无匹配文件' : '输入文件名或路径搜索'}</div>
         </div>
       )
     }

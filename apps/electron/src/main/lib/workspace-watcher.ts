@@ -16,6 +16,7 @@ import type { FSWatcher } from 'node:fs'
 import type { BrowserWindow } from 'electron'
 import { AGENT_IPC_CHANNELS } from '@proma/shared'
 import { getAgentWorkspacesDir } from './config-paths'
+import { invalidateWorkspaceFileSearchCache } from './workspace-file-search'
 
 /** debounce 延迟（ms） */
 const DEBOUNCE_MS = 300
@@ -94,6 +95,7 @@ export function startWorkspaceWatcher(win: BrowserWindow): void {
         // 其他文件变化 → 通知文件浏览器刷新
         if (filesTimer) clearTimeout(filesTimer)
         filesTimer = setTimeout(() => {
+          invalidateWorkspaceFileSearchCache()
           if (!win.isDestroyed()) {
             win.webContents.send(AGENT_IPC_CHANNELS.WORKSPACE_FILES_CHANGED)
           }
@@ -155,6 +157,7 @@ export function watchAttachedDirectory(dirPath: string): void {
       // 统一防抖：所有附加目录变化合并为一次刷新
       if (attachedFilesTimer) clearTimeout(attachedFilesTimer)
       attachedFilesTimer = setTimeout(() => {
+        invalidateWorkspaceFileSearchCache()
         if (mainWin && !mainWin.isDestroyed()) {
           mainWin.webContents.send(AGENT_IPC_CHANNELS.WORKSPACE_FILES_CHANGED)
         }
