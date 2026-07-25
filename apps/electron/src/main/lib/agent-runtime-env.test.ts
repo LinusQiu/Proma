@@ -88,4 +88,17 @@ describe('Agent Windows Shell 运行环境', () => {
 
     expect(result).toEqual({ PATH: 'C:\\Proma;C:\\Windows\\System32' })
   })
+
+  test('Given 打包版 CLI When 构建 Pi Bash 环境 Then 注入 PROMA_CLI 并优先其目录', () => {
+    const result = buildAgentRuntimeEnv({
+      bundledCliPath: '/Applications/Proma.app/Contents/Resources/bin/proma',
+      platform: 'darwin',
+      processEnv: { PATH: '/usr/bin:/bin' },
+    })
+
+    expect(result.env).toMatchObject({
+      PROMA_CLI: '/Applications/Proma.app/Contents/Resources/bin/proma',
+      PATH: '/Applications/Proma.app/Contents/Resources/bin:/usr/bin:/bin',
+    })
+  })
 })

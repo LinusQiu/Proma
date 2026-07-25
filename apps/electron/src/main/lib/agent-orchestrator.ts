@@ -51,7 +51,7 @@ import { getAgentWorkspacePath, getAgentSessionWorkspacePath, getSdkConfigDir, g
 import { getRuntimeStatus } from './runtime-init'
 import { getSettings } from './settings-service'
 import { buildSystemPrompt, buildDynamicContext } from './agent-prompt-builder'
-import { MAX_CONTEXT_MESSAGES, buildContextPrompt, buildRecoveryPrompt, buildReferencedSessionsPrompt } from './agent-session-context-prompt'
+import { MAX_CONTEXT_MESSAGES, buildContextPrompt, buildRecoveryPrompt, buildReferencedSessionsPrompt, mergeSessionCleanerSkillMention } from './agent-session-context-prompt'
 import { permissionService } from './agent-permission-service'
 import type { PermissionResult, CanUseToolOptions } from './agent-permission-service'
 import { askUserService } from './agent-ask-user-service'
@@ -1623,6 +1623,9 @@ export class AgentOrchestrator {
         })
       }
       const piCustomTools = [...piBuiltinTools, ...piMcpTools]
+      const piSkillMentions = agentRuntime === 'pi'
+        ? mergeSessionCleanerSkillMention(mentionedSkills, mentionedSessionIds)
+        : mentionedSkills
       const queryOptions: ClaudeAgentQueryOptions | PiAgentQueryOptions = agentRuntime === 'pi' ? {
         agentRuntime: 'pi',
         sessionId,
@@ -1647,7 +1650,7 @@ export class AgentOrchestrator {
         piSessionDir: join(getSdkConfigDir(), 'sessions'),
         ...(allAdditionalDirectories.length > 0 && { additionalDirectories: allAdditionalDirectories }),
         ...(workspaceSlug ? { additionalSkillPaths: [getWorkspaceSkillsDir(workspaceSlug)] } : {}),
-        ...(mentionedSkills?.length ? { skillMentions: mentionedSkills } : {}),
+        ...(piSkillMentions?.length ? { skillMentions: piSkillMentions } : {}),
         ...(isCompactCommand ? { compactRequest: true } : {}),
         ...(sessionMeta?.codexFastMode && channel.provider === 'openai-codex' ? { codexFastMode: true } : {}),
         ...(codexOAuthCredentials && {
@@ -2677,6 +2680,7 @@ export class AgentOrchestrator {
       enrichedText = `<mentioned_tools>\n${toolLines.join('\n')}\n</mentioned_tools>\n\n${enrichedText}`
     }
 
+    const skillMentions = mergeSessionCleanerSkillMention(mentionedSkills, mentionedSessionIds)
     const uuid = presetUuid || randomUUID()
 
     // 防重记录
@@ -2706,7 +2710,9 @@ export class AgentOrchestrator {
         }
       }
 
-      await this.adapter.sendQueuedMessage(sessionId, sdkMessage)
+      await this.adapter.sendQueuedMessage(sessionId, sdkMessage, {
+        ...(skillMentions?.length ? { skillMentions } : {}),
+      })
       console.log(`[Agent 编排] 追加消息已注入: sessionId=${sessionId}, uuid=${uuid}, interrupt=${!!opts?.interrupt}`)
 
       // 立即持久化到 JSONL — 仅存原始文本，不含 prompt 工程块（与 sendMessage 路径一致）

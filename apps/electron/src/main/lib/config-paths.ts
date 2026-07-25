@@ -413,6 +413,23 @@ export function getBundledCliPath(): string | undefined {
 }
 
 /**
+ * 获取开发模式下 CLI 的 TypeScript 入口。
+ *
+ * 打包版使用自包含二进制；开发模式则由 Bun 直接运行源码，并显式加 --dev
+ * 以读取 ~/.proma-dev，避免误读正式版会话库。
+ */
+export function getDevCliEntryPath(): string | undefined {
+  try {
+    const { app } = require('electron')
+    if (app.isPackaged || typeof app.getAppPath !== 'function') return undefined
+    const entryPath = join(app.getAppPath(), '..', 'cli', 'src', 'index.ts')
+    return existsSync(entryPath) ? entryPath : undefined
+  } catch {
+    return undefined
+  }
+}
+
+/**
  * 从 SKILL.md 的 YAML frontmatter 中解析 version 字段
  *
  * 无 version 字段时返回 '0.0.0'（确保旧 Skill 会被更新）。

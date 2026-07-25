@@ -1,8 +1,17 @@
+import { statSync } from 'node:fs'
+import { groupIntoTurns, formatOutlineLine, outline, toTranscript } from '@proma/session-core'
+import { readSessionMessages } from '@proma/session-core/node'
 import { getAgentSessionMeta, getAgentSessionSDKMessages } from './agent-session-manager'
-import { getBundledCliPath, getConfigDirName } from './config-paths'
+import { getAgentSessionMessagesPath, getBundledCliPath, getConfigDirName, getDevCliEntryPath } from './config-paths'
 
 /** 最大回填消息条数 */
 export const MAX_CONTEXT_MESSAGES = 20
+
+/** 显式引用会话时注入的 turn 地图上限，正文仍由 Agent 按需通过 CLI 读取。 */
+const MAX_REFERENCED_SESSION_OUTLINE_TURNS = 16
+
+/** 超过此大小的会话只注入读取指引，避免主进程为引用地图同步扫描超大 JSONL。 */
+const MAX_REFERENCED_SESSION_OUTLINE_BYTES = 2 * 1024 * 1024
 
 /** 单条工具摘要最大字符数 */
 const MAX_TOOL_SUMMARY_LENGTH = 200
@@ -16,22 +25,29 @@ function getSessionHistoryPath(sessionId: string): string {
   return `~/${getConfigDirName()}/agent-sessions/${sessionId}.jsonl`
 }
 
-function canUseSessionCleaner(): boolean {
-  return !!getBundledCliPath()
-}
-
 function getSessionCleanerSkillName(workspaceSlug?: string): string {
   return workspaceSlug
     ? `proma-workspace-${workspaceSlug}:session-cleaner`
     : 'session-cleaner'
 }
 
-function getSessionCliCommandPrefix(): string {
-  return getBundledCliPath() ? '"$PROMA_CLI"' : 'proma'
+function quoteShellArgument(value: string): string {
+  return `"${value.replace(/[$`\\"]/g, '\\$&')}"`
+}
+
+function getSessionCliCommandPrefix(): string | undefined {
+  if (getBundledCliPath()) return '"$PROMA_CLI"'
+
+  const devCliEntryPath = getDevCliEntryPath()
+  return devCliEntryPath ? `bun ${quoteShellArgument(devCliEntryPath)} --dev` : undefined
 }
 
 function buildSessionCliAccessGuide(sessionId: string, historyPath: string, workspaceSlug?: string): string {
   const cli = getSessionCliCommandPrefix()
+  if (!cli) {
+    return `请先读取上述完整历史文件以恢复上下文。会话历史文件（.jsonl）可能包含大量消息和 tool results，文件较大；如果完整读取风险较高，请优先使用 Grep 搜索关键词定位相关消息片段，再局部读取。History path: ${historyPath}`
+  }
+
   const skillName = getSessionCleanerSkillName(workspaceSlug)
   return [
     `优先使用 session-cleaner skill（${skillName}）读取当前会话历史；它是 Proma CLI 的薄封装，会把 Agent JSONL 清洗为干净对话。`,
@@ -46,21 +62,60 @@ function buildSessionCliAccessGuide(sessionId: string, historyPath: string, work
 }
 
 function buildCurrentSessionHistoryInstruction(sessionId: string, workspaceSlug?: string): string {
-  const historyPath = getSessionHistoryPath(sessionId)
-  if (canUseSessionCleaner()) {
-    return buildSessionCliAccessGuide(sessionId, historyPath, workspaceSlug)
-  }
+  return buildSessionCliAccessGuide(sessionId, getSessionHistoryPath(sessionId), workspaceSlug)
+}
 
-  return `请先读取上述完整历史文件以恢复上下文。会话历史文件（.jsonl）可能包含大量消息和 tool results，文件较大；如果完整读取风险较高，请优先使用 Grep 搜索关键词定位相关消息片段，再局部读取。History path: ${historyPath}`
+function buildReferencedSessionOutline(sessionId: string): string | undefined {
+  try {
+    const sessionPath = getAgentSessionMessagesPath(sessionId)
+    const bytes = statSync(sessionPath).size
+    if (bytes > MAX_REFERENCED_SESSION_OUTLINE_BYTES) {
+      return [
+        `<session_outline skipped="too-large" bytes="${bytes}">`,
+        '宿主未扫描超大历史；请先使用 CLI 的 info 和 outline 命令渐进读取。',
+        '</session_outline>',
+      ].join('\n')
+    }
+
+    const entries = outline(toTranscript(groupIntoTurns(readSessionMessages(sessionPath))))
+    const visibleEntries = entries.slice(-MAX_REFERENCED_SESSION_OUTLINE_TURNS)
+    const omittedEntries = entries.length - visibleEntries.length
+    const lines = visibleEntries.map((entry) => escapeContextText(formatOutlineLine(entry)))
+
+    return [
+      `<session_outline totalTurns="${entries.length}" shownTurns="${visibleEntries.length}">`,
+      '以下是宿主生成的受限定位地图，不是完整会话正文；预览可能截断，不能据此声称已读取完整历史。',
+      ...(omittedEntries > 0 ? [`已省略最早 ${omittedEntries} 个 turn。`] : []),
+      ...lines,
+      '</session_outline>',
+    ].join('\n')
+  } catch (error) {
+    console.warn(`[Agent 编排] 无法生成引用会话地图: sessionId=${sessionId}`, error)
+    return undefined
+  }
 }
 
 function buildReferencedSessionsHistoryInstruction(workspaceSlug?: string): string {
-  if (canUseSessionCleaner()) {
+  const cli = getSessionCliCommandPrefix()
+  if (cli) {
     const skillName = getSessionCleanerSkillName(workspaceSlug)
-    return `需要这些会话的上下文时，优先使用 session-cleaner skill（${skillName}）或 Proma CLI 读取清洗后的会话历史。按 info → outline/search → export 的顺序渐进式读取；不要假设会话内容，也不要直接 Read 原始 .jsonl 历史文件。`
+    return [
+      `这些会话已由宿主提供受限 turn 地图，但不含完整正文。若回答、总结、继续执行或决策依赖被引用会话的内容，必须先用 session-cleaner skill（${skillName}）或 Proma CLI 读取相关 turn；不得只依据标题、元数据或地图回答。`,
+      `可用 CLI 命令前缀: ${cli}`,
+      '按 info → outline/search → export 的顺序渐进读取；不要直接 Read 原始 .jsonl 历史文件。',
+    ].join('\n')
   }
 
-  return `不要假设这些会话的内容；需要上下文时，请先读取对应的 History path，再基于读取结果继续完成任务。\n\n重要提示：会话历史文件（.jsonl）可能包含大量消息和 tool results，文件较大。请优先使用 Grep 搜索关键词定位相关消息片段，再局部读取。避免一次性 Read 整个大文件。`
+  return `这些会话仅提供受限 turn 地图，不含完整正文。若回答依赖被引用会话的内容，必须先读取对应的 History path，再基于读取结果继续完成任务。会话历史文件（.jsonl）可能包含大量消息和 tool results，应优先用 Grep 定位后局部读取，避免一次性 Read 整个文件。`
+}
+
+/** Pi 没有原生 Skill 工具；显式会话引用必须显式展开 session-cleaner 的 SOP。 */
+export function mergeSessionCleanerSkillMention(
+  mentionedSkills: string[] | undefined,
+  mentionedSessionIds: string[] | undefined,
+): string[] | undefined {
+  if (!mentionedSessionIds?.some(Boolean)) return mentionedSkills
+  return [...new Set([...(mentionedSkills ?? []), 'session-cleaner'])]
 }
 
 /**
@@ -172,12 +227,15 @@ export function buildRecoveryPrompt(
   return `${recoveryBlock}\n\n${currentUserMessage}`
 }
 
-function escapeContextAttr(value: string): string {
+function escapeContextText(value: string): string {
   return value
     .replace(/&/g, '&amp;')
-    .replace(/"/g, '&quot;')
     .replace(/</g, '&lt;')
     .replace(/>/g, '&gt;')
+}
+
+function escapeContextAttr(value: string): string {
+  return escapeContextText(value).replace(/"/g, '&quot;')
 }
 
 export function buildReferencedSessionsPrompt(
@@ -201,10 +259,21 @@ export function buildReferencedSessionsPrompt(
 
     const title = escapeContextAttr(meta.title)
     const historyPath = getSessionHistoryPath(referencedSessionId)
+    const cli = getSessionCliCommandPrefix()
+    const commands = cli
+      ? [
+        `读取此会话：${cli} session info ${referencedSessionId}`,
+        `${cli} session outline ${referencedSessionId}`,
+        `根据地图选择 ${cli} session export ${referencedSessionId} --turns A-B 或 --tail N。`,
+      ].join('\n')
+      : ''
+    const sessionOutline = buildReferencedSessionOutline(referencedSessionId)
     sessionBlocks.push(
       `<session id="${referencedSessionId}" title="${title}" updatedAt="${meta.updatedAt}">\n` +
       `CLI target: ${referencedSessionId}\n` +
       `History path: ${historyPath}\n` +
+      `${commands}\n` +
+      `${sessionOutline ?? ''}\n` +
       '</session>',
     )
   }
