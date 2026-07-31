@@ -35,6 +35,7 @@ The open-source version can be used independently with self-configured AI provid
 | Agent security and reliability | Evaluate each provider's security, protocol compatibility, and reliability yourself; third-party relays also add trust and data-handling considerations | Use Proma Cloud's managed official route with unified security and reliability safeguards, Agent protocol compatibility, and model health monitoring—reducing uncertainty from opaque third-party relays |
 | Web-connected and built-in AI capabilities | Configure search, image generation, and their API keys as needed | Get a more complete Proma Cloud web-connected and built-in experience, including WebSearch plus GPT Image 2 image generation and editing |
 | Public API and services | Primarily use the provider APIs that you configure yourself | Create dedicated, quota-limited Proma Cloud API keys to bring LLM, tool, and multimodal capabilities into your own apps or services |
+| Team credit management | Build your own member, credit-allocation, and usage-management processes | Team admins can allocate or reclaim shared team credits for members, automate monthly allocation, and review member usage and credit transactions |
 | Subscription and usage | Manage provider accounts, balances, and usage yourself | Manage subscriptions and balance in the app, with detailed model, Agent, and tool usage |
 | Switching from open source | — | Install over the existing app and continue using your local Proma data |
 
