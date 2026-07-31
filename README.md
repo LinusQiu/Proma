@@ -31,7 +31,7 @@ Proma 是一个本地优先的 AI 桌面应用，把多模型 Chat、通用 Agen
 
 从 [GitHub Releases](https://github.com/ErlichLiu/Proma/releases) 下载开源版本，提供 macOS Apple Silicon、macOS Intel 和 Windows 安装包。
 
-如果你希望开箱即用、减少 API 配置成本，也可以使用 [Proma 商业版](https://proma.cool/download)。商业版和开源版并行运行，主要区别是商业版提供内置渠道和订阅方案。
+开源版可独立使用，并支持自行配置 AI 供应商渠道。如果你更希望使用 Proma 提供的内置模型渠道和订阅方案，也可以按需了解 [Proma 商业版](https://proma.cool/download)。两个版本面向不同的使用偏好，你可以自由选择适合自己的版本。
 
 ### 首次配置
 
