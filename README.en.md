@@ -27,6 +27,16 @@ Download the open-source version from [GitHub Releases](https://github.com/Erlic
 
 The open-source version can be used independently with self-configured AI provider channels. If you prefer Proma-provided built-in model channels and subscription options, you can optionally explore the [Proma commercial version](https://proma.cool/download). The two versions support different preferences, and you are free to choose the one that best fits your workflow.
 
+| Comparison | Open-source version | Commercial version |
+| --- | --- | --- |
+| Core desktop experience | Full Proma desktop experience with freedom to configure your workflow | The same core desktop experience |
+| Model channels | Add and manage AI provider channels and API keys yourself | Sign in to use Proma-provided model channels, while keeping the option to configure third-party channels |
+| Model pricing | Use each chosen provider under its own pricing and terms | Selected models have Proma Cloud-exclusive offers, with some priced as low as 20% of the official reference price |
+| Subscription and usage | Manage provider accounts, balances, and usage yourself | Manage subscriptions and balance in the app, with detailed model, Agent, and tool usage |
+| Switching from open source | — | Install over the existing app and continue using your local Proma data |
+
+> Available models, prices, and benefits may change; refer to the current in-app information.
+
 ### First Setup
 
 1. Open Proma and finish the environment check. Agent mode depends on local tooling, especially Git, Node.js / Bun, and a usable shell.
