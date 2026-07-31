@@ -41,6 +41,10 @@ The open-source version can be used independently with self-configured AI provid
 
 > Available models, prices, and benefits may change; refer to the current in-app information.
 
+### Enterprise licensing
+
+If your organization plans to deploy Proma for hundreds or thousands of employees, enterprise licenses are available. We can also provide scoped, lightweight customization around your deployment needs. Contact us on WeChat: `geekthings`.
+
 ### First Setup
 
 1. Open Proma and finish the environment check. Agent mode depends on local tooling, especially Git, Node.js / Bun, and a usable shell.
