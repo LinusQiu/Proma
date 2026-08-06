@@ -58,6 +58,29 @@ describe('项目与会话工作台提示词', () => {
     expect(prompt).toContain('项目根与 cwd 不一定相同')
   })
 
+  test('Given a root legacy CLAUDE.md When building the Pi prompt Then requires an AGENTS.md migration first', () => {
+    const prompt = buildSystemPrompt({
+      agentRuntime: 'pi',
+      workspaceName: '示例项目',
+      workspaceSlug: 'sample-project',
+      sessionId: 'session-1',
+      agentCwd: '/tmp/sample-project',
+      permissionMode: 'bypassPermissions',
+      legacyProjectInstructions: [{
+        path: '/tmp/sample-project/CLAUDE.md',
+        relativePath: 'CLAUDE.md',
+        scopeRoot: '.',
+        kind: 'claude',
+        content: 'legacy instruction',
+        contentHash: 'legacy-hash',
+      }],
+    })
+
+    expect(prompt).toContain('## Legacy 项目指令迁移任务')
+    expect(prompt).toContain('CLAUDE.md')
+    expect(prompt).toContain('完成迁移后再修改对应 scope 内的其他项目文件')
+  })
+
   test('Given 项目动态上下文 When 构建消息前缀 Then 使用项目标签', () => {
     const context = buildDynamicContext({
       workspaceName: '示例项目',

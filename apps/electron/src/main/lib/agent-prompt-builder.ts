@@ -17,6 +17,7 @@ import { getAgentWorkspaceBySlug, getProjectFilesPath, getWorkspaceMcpConfig } f
 import { getConfigDirName } from './config-paths'
 import { buildGitAttributionPromptSection, isGitAttributionEnabled } from './agent-git-attribution'
 import { getSettings } from './settings-service'
+import type { ProjectInstructionSource } from './project-instruction-resolver'
 
 // ===== 工具使用指南（可复用常量） =====
 
@@ -41,7 +42,18 @@ interface SystemPromptContext {
   collaborationAvailable?: boolean
   /** 当前 Agent 实际运行的模型；Pi 用它在委派时显式透传默认模型 */
   currentModelId?: string
+  /** 当前根 scope 内作为兼容来源加载的 legacy 项目指令。 */
+  legacyProjectInstructions?: ProjectInstructionSource[]
 }
+
+function buildLegacyProjectMigrationPrompt(sources: ProjectInstructionSource[] | undefined): string | undefined {
+  const legacySources = sources?.filter((source) => source.kind === 'claude') ?? []
+  if (legacySources.length === 0) return undefined
+
+  const entries = legacySources.map((source) => `- \`${source.relativePath}\`（scope: \`${source.scopeRoot}\`，hash: \`${source.contentHash}\`）`)
+  return `## Legacy 项目指令迁移任务
+
+Proma 已从受信任项目根加载以下 legacy \`CLAUDE.md\` 兼容来源：\n${entries.join('\n')}\n\n先结合每个目录的实际结构和该 \`CLAUDE.md\` 内容，创建同目录最小、可维护的 \`AGENTS.md\`，以便 Pi Agent 使用跨 Agent 标准规则；保留原 \`CLAUDE.md\` 作为兼容文件。不得整体覆盖已有 \`AGENTS.md\`，也不得重命名或删除 legacy 文件。完成迁移后再修改对应 scope 内的其他项目文件。`}
 
 function buildWorkspacePromptPaths(workspaceSlug: string, sessionId: string, agentCwd?: string) {
   const configDirName = getConfigDirName()
@@ -189,6 +201,11 @@ Proma 提供内置 \`collaboration\` 工具，用来创建真实可见、可追�
 - 本地项目根目录中的改动会直接写入用户的原始文件；不要把它当作可随意清理的临时目录`)
   }
 
+  const legacyProjectMigrationPrompt = buildLegacyProjectMigrationPrompt(ctx.legacyProjectInstructions)
+  if (legacyProjectMigrationPrompt) {
+    sections.push(legacyProjectMigrationPrompt)
+  }
+
   // 自主执行与最小澄清策略
   sections.push(`## 自主执行与澄清
 
@@ -232,7 +249,7 @@ Proma 提供内置 \`collaboration\` 工具，用来创建真实可见、可追�
 
 用户项目中的 \`AGENTS.md\` 是跨 Agent 的项目规范正本；Proma 会在 Pi runtime 中从已授权项目根显式加载它，而不会让 Pi 扫描任意父目录。只有没有同目录 \`AGENTS.md\` 时，legacy \`CLAUDE.md\` 才会作为临时兼容来源：
 - **适合写入**：项目命令、测试方式、架构边界、目录约定、发布与协作流程等可验证、跨会话有效的规则
-- **维护方式**：当用户明确要求、反复确认同一约束，或完成了已验证的可复用修复时，先基于证据生成最小 \`AGENTS.md\` patch；已有文件不整体覆写，存在 legacy \`CLAUDE.md\` 时先解释迁移和冲突
+- **维护方式**：当用户明确要求、反复确认同一约束，或完成了已验证的可复用修复时，先基于证据生成最小 \`AGENTS.md\` patch；已有文件不整体覆写，存在 legacy \`CLAUDE.md\` 时先解释迁移和冲突。若本轮存在 Proma 注入的「Legacy 项目指令迁移任务」，按该任务先迁移对应 scope
 - **边界**：不要把会话临时信息、用户个人偏好或未验证推断写入用户项目；没有明确维护信号时不为了“完整”而创建模板
 
 ### SDK auto memory — 自动记忆（用户可审计）
