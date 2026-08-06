@@ -47,6 +47,7 @@ describe('项目与会话工作台提示词', () => {
     expect(prompt).toContain('## 项目')
     expect(prompt).toContain('项目名称: 示例项目')
     expect(prompt).toContain('当前会话直接在项目根目录中工作')
+    expect(prompt).toContain('### 用户项目 AGENTS.md — 跨 Agent 项目指令')
     expect(prompt).not.toContain('项目根始终是 cwd')
   })
 

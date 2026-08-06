@@ -48,7 +48,11 @@ import {
   createAgentRuntimeGuard,
   type AgentRuntimeGuard,
 } from '../agent-runtime-guards'
-import { createPromaAgentsFilesOverride } from './pi-resource-loader-overrides'
+import {
+  createPromaManagedResourceLoaderOptions,
+  createPromaProjectInstructionFilesOverride,
+  type PromaProjectInstructionFile,
+} from './pi-resource-loader-overrides'
 import { createCodexFastModeExtension, withCodexFastModeServiceTier } from './pi-codex-request-settings'
 import { createDeepSeekReasoningRequestExtension } from './pi-deepseek-reasoning-request-settings'
 import { createOpenAIReasoningRequestExtension } from './pi-openai-reasoning-request-settings'
@@ -102,6 +106,8 @@ export interface PiAgentQueryOptions extends AgentQueryInput {
     options: CanUseToolOptions,
   ) => Promise<PermissionResult>
   systemPrompt: string
+  /** Proma 已验证的项目根 instruction files；不触发 Pi 的磁盘自动发现。 */
+  projectInstructionFiles?: PromaProjectInstructionFile[]
   resumeSessionId?: string
   piAgentDir: string
   piSessionDir: string
@@ -1280,10 +1286,10 @@ export class PiAgentAdapter implements AgentProviderAdapter {
         cwd,
         agentDir: input.piAgentDir,
         settingsManager,
-        noSkills: true,
+        ...createPromaManagedResourceLoaderOptions(),
+        agentsFilesOverride: createPromaProjectInstructionFilesOverride(input.projectInstructionFiles ?? []),
         additionalSkillPaths: input.additionalSkillPaths ?? [],
         skillsOverride: createPromaSkillsOverride(input.additionalSkillPaths),
-        agentsFilesOverride: createPromaAgentsFilesOverride(),
         ...(model.reasoning && extensionFactories.length > 0 && { extensionFactories }),
         systemPromptOverride: () => input.systemPrompt,
       })
