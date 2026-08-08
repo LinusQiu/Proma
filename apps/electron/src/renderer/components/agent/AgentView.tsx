@@ -2794,7 +2794,6 @@ export function AgentView({ sessionId }: { sessionId: string }): React.ReactElem
           cacheCreationTokens={contextStatus.cacheCreationTokens}
           contextWindow={contextStatus.contextWindow}
           isEstimated={contextStatus.contextUsageIsEstimated === true}
-          isPiRuntime
           isCompacting={contextStatus.isCompacting}
           isProcessing={streaming}
           sessionId={sessionId}
