@@ -60,7 +60,6 @@ describe('项目与会话工作台提示词', () => {
 
   test('Given a root legacy CLAUDE.md When building the Pi prompt Then requires an AGENTS.md migration first', () => {
     const prompt = buildSystemPrompt({
-      agentRuntime: 'pi',
       workspaceName: '示例项目',
       workspaceSlug: 'sample-project',
       sessionId: 'session-1',
