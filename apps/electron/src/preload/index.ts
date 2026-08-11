@@ -38,6 +38,7 @@ import type {
   RecentMessagesResult,
   MessageSearchResult,
   AgentSessionMeta,
+  SetAgentSessionActiveWorktreeInput,
   SDKMessage,
   AgentSendInput,
   AgentThinkingLevel,
@@ -524,6 +525,9 @@ export interface ElectronAPI {
   /** 更新 Agent 会话模型选择 */
   updateAgentSessionModel: (id: string, channelId?: string, modelId?: string) => Promise<AgentSessionMeta>
 
+  /** 选择或清除当前会话的活动 worktree */
+  setAgentSessionActiveWorktree: (input: SetAgentSessionActiveWorktreeInput) => Promise<AgentSessionMeta>
+
   /** 删除 Agent 会话 */
   deleteAgentSession: (id: string) => Promise<void>
 
@@ -861,7 +865,7 @@ export interface ElectronAPI {
   showItemInFolder: (filePath: string, candidateBasePaths?: string[]) => Promise<boolean>
 
   /** 解析文件路径并读取内容（供内联预览使用） */
-  resolveAndReadFile: (filePath: string, access?: import('@proma/shared').FileAccessOptions) => Promise<{ resolvedPath: string; content: string } | null>
+  resolveAndReadFile: (filePath: string, access?: import('@proma/shared').FileAccessOptions) => Promise<{ resolvedPath: string; content: string; isBinary: boolean; isTooLarge: boolean } | null>
 
   /** 写入文本文件（供 Markdown 内联编辑使用） */
   writeTextFile: (filePath: string, content: string, access?: import('@proma/shared').FileAccessOptions) => Promise<boolean>
@@ -964,9 +968,10 @@ export interface ElectronAPI {
   listReleases: (options?: GitHubReleaseListOptions) => Promise<GitHubRelease[]>
   getReleaseByTag: (tag: string) => Promise<GitHubRelease | null>
 
-  // 工作区文件变化通知
+  /** 工作区能力变化通知 */
   onCapabilitiesChanged: (callback: () => void) => () => void
-  onWorkspaceFilesChanged: (callback: () => void) => () => void
+  /** 工作区文件变化通知；可选携带 debounce 窗口内的实际变化绝对路径 */
+  onWorkspaceFilesChanged: (callback: (changedPaths?: string[]) => void) => () => void
 
   // ===== 飞书集成 =====
 
@@ -1724,6 +1729,10 @@ const electronAPI: ElectronAPI = {
     return ipcRenderer.invoke(AGENT_IPC_CHANNELS.UPDATE_SESSION_MODEL, id, channelId, modelId)
   },
 
+  setAgentSessionActiveWorktree: (input: SetAgentSessionActiveWorktreeInput) => {
+    return ipcRenderer.invoke(AGENT_IPC_CHANNELS.SET_ACTIVE_WORKTREE, input)
+  },
+
   deleteAgentSession: (id: string) => {
     return ipcRenderer.invoke(AGENT_IPC_CHANNELS.DELETE_SESSION, id)
   },
@@ -2094,8 +2103,12 @@ const electronAPI: ElectronAPI = {
     return () => { ipcRenderer.removeListener(AGENT_IPC_CHANNELS.CAPABILITIES_CHANGED, listener) }
   },
 
-  onWorkspaceFilesChanged: (callback: () => void) => {
-    const listener = (): void => callback()
+  onWorkspaceFilesChanged: (callback: (changedPaths?: string[]) => void) => {
+    const listener = (_event: unknown, changedPaths?: unknown): void => {
+      callback(Array.isArray(changedPaths)
+        ? changedPaths.filter((path): path is string => typeof path === 'string')
+        : undefined)
+    }
     ipcRenderer.on(AGENT_IPC_CHANNELS.WORKSPACE_FILES_CHANGED, listener)
     return () => { ipcRenderer.removeListener(AGENT_IPC_CHANNELS.WORKSPACE_FILES_CHANGED, listener) }
   },
@@ -2220,7 +2233,7 @@ const electronAPI: ElectronAPI = {
   },
 
   resolveAndReadFile: (filePath: string, access?: import('@proma/shared').FileAccessOptions) => {
-    return ipcRenderer.invoke('file:resolve-and-read', filePath, access) as Promise<{ resolvedPath: string; content: string } | null>
+    return ipcRenderer.invoke('file:resolve-and-read', filePath, access) as Promise<{ resolvedPath: string; content: string; isBinary: boolean; isTooLarge: boolean } | null>
   },
 
   writeTextFile: (filePath: string, content: string, access?: import('@proma/shared').FileAccessOptions) => {
