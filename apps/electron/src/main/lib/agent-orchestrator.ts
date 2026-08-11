@@ -62,8 +62,6 @@ import { askUserService } from './agent-ask-user-service'
 import { exitPlanService, type ExitPlanPermissionResult } from './agent-exit-plan-service'
 import { validateToolInput } from './agent-tool-input-validator'
 import { estimateTokenCount, WRITE_CONTENT_TOKEN_THRESHOLD } from './agent-tool-token-estimator'
-import { injectChromeDevtoolsMcpServer } from './builtin-mcp/chrome-devtools'
-import { isBuiltinMcpUserEnabled } from './builtin-mcp/settings'
 import { buildPiBuiltinTools } from './adapters/pi-builtin-tools'
 import { buildPiMcpTools } from './adapters/pi-mcp-tools'
 import { buildAgentRuntimeEnv, type AgentRuntimeEnv } from './agent-runtime-env'
@@ -73,6 +71,7 @@ import { resolvePiReasoningCapability } from './adapters/pi-model-registry'
 import { generateCodexTitle } from './adapters/pi-codex-title-generator'
 import { createFallbackTitle, sanitizeGeneratedTitle, TITLE_PROMPT } from './title-generation'
 import { claimWorkspaceMemoryRefreshOpportunity } from './agent-memory-refresh-service'
+import { browserController } from './browser-controller'
 
 // ===== 类型定义 =====
 
@@ -873,8 +872,11 @@ export class AgentOrchestrator {
         sessionMeta,
         workspaceSlug,
       })
-
-      // 9.6 直接信任已保存的 sdkSessionId，跳过 listSessions 预验证
+      const browserAllowedRoots = [...new Set([
+        workspaceId ? agentCwd : undefined,
+        workspaceSlug ? getProjectFilesPath(workspaceSlug) : undefined,
+        ...allAdditionalDirectories,
+      ].filter((root): root is string => typeof root === 'string' && root.length > 0))]
       // 原因：listSessions({ dir }) 基于 cwd 路径哈希查找，但 session 级别的 cwd
       // （如 ~/.proma/agent-workspaces/workspace-xxx/sessionId）与 SDK 内部存储的路径哈希可能不匹配，
       // 导致 listSessions 始终返回 0 个会话，误杀有效的 resume。
@@ -885,9 +887,6 @@ export class AgentOrchestrator {
 
       // 10. 构建 MCP 服务器配置 + 记忆工具 + 生图工具 + 自定义工具
       const mcpServers = this.buildMcpServers(workspaceSlug)
-      if (isBuiltinMcpUserEnabled('chrome-devtools')) {
-        injectChromeDevtoolsMcpServer(mcpServers, runtimeEnv.env)
-      }
       let piBuiltinTools: unknown[] = []
       let piMcpTools: unknown[] = []
       const piSdk = await import('@earendil-works/pi-coding-agent')
@@ -898,7 +897,7 @@ export class AgentOrchestrator {
         workspaceId,
         workspaceSlug,
         agentCwd,
-        allowedRoots: allAdditionalDirectories,
+        allowedRoots: browserAllowedRoots,
         permissionMode: permissionModeOverride ?? sessionMeta?.permissionMode ?? PROMA_DEFAULT_PERMISSION_MODE,
         triggeredBy: input.triggeredBy,
         windowsShellAvailable: process.platform !== 'win32' || runtimeEnv.shellKind != null,
@@ -1057,6 +1056,8 @@ export class AgentOrchestrator {
         'mcp__planning__list_groups', 'mcp__planning__list_tags',
         'mcp__planning__list_active_reminders',
       ])
+      // Pi-native 浏览器工具不是 MCP：必须显式分类，避免被通用 mcp__ 调研放行规则遗漏。
+      const PLAN_MODE_READ_ONLY_BROWSER_TOOLS = new Set(['BrowserObserve', 'BrowserScreenshot', 'BrowserListTabs', 'BrowserPreviewOpen'])
       const runTriggeredBy = input.triggeredBy
 
       /** Plan 模式是否已被 Agent 进入（初始 plan 模式时天然为 true，其他模式需 EnterPlanMode 触发） */
@@ -1158,6 +1159,17 @@ export class AgentOrchestrator {
             return { behavior: 'deny' as const, message: '计划模式下不能将本地图片发送给视觉模型，请在计划获批后执行。' }
           }
           return { behavior: 'allow' as const }
+        }
+
+        // 所有 Pi 会话均可使用受管浏览器。主进程仍隔离网页，并拒绝私网、下载、弹窗和网页权限；
+        // 页面内容始终视为不可信输入。计划模式仅允许只读浏览器操作。
+        if (toolName.startsWith('Browser')) {
+          if (currentMode === 'plan') {
+            return PLAN_MODE_READ_ONLY_BROWSER_TOOLS.has(toolName)
+              ? { behavior: 'allow' as const, updatedInput: input }
+              : { behavior: 'deny' as const, message: '计划模式下只能观察受管浏览器，请在计划获批后再进行网页交互。' }
+          }
+          return { behavior: 'allow' as const, updatedInput: input }
         }
 
         const planningDeletionPermission = resolvePlanningDeletionPermission(
@@ -1937,6 +1949,7 @@ export class AgentOrchestrator {
     const runGeneration = this.activeSessions.get(sessionId)
     this.activeSessions.delete(sessionId)
     this.sessionPermissionModes.delete(sessionId)
+    browserController.cancelSession(sessionId)
     if (runGeneration != null) this.stoppedBySessions.set(sessionId, runGeneration)
     this.queuedMessageUuids.delete(sessionId)
     this.adapter.abort(sessionId)
