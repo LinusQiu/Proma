@@ -279,7 +279,7 @@ import {
   searchAgentSessionMessages,
   searchAgentSessionReferences,
 } from './lib/agent-session-manager'
-import { runAgent, stopAgent, generateAgentTitle, saveFilesToAgentSession, saveFilesToWorkspaceFiles, isAgentSessionActive, queueAgentMessage, updateAgentPermissionMode, rewindAgentSession } from './lib/agent-service'
+import { runAgent, stopAgent, generateAgentTitle, saveFilesToAgentSession, saveFilesToWorkspaceFiles, isAgentSessionActive, queueAgentMessage, updateAgentPermissionMode, rewindAgentSession, setVisibleAgentSession } from './lib/agent-service'
 import { permissionService } from './lib/agent-permission-service'
 import { askUserService } from './lib/agent-ask-user-service'
 import { exitPlanService } from './lib/agent-exit-plan-service'
@@ -2825,6 +2825,17 @@ export function registerIpcHandlers(): void {
       }
       await runAgent(input, event.sender)
     }
+  )
+
+  // renderer 的当前 Agent Tab 决定 partial 消息是前台 20fps 还是后台 4fps。
+  ipcMain.handle(
+    AGENT_IPC_CHANNELS.SET_VISIBLE_STREAM_SESSION,
+    async (event, sessionId: string | null): Promise<void> => {
+      if (sessionId !== null && (typeof sessionId !== 'string' || sessionId.length === 0)) {
+        throw new Error('可见 Agent 会话 ID 非法')
+      }
+      setVisibleAgentSession(event.sender, sessionId)
+    },
   )
 
   // 中止 Agent 执行

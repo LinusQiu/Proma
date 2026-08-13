@@ -61,7 +61,7 @@ import {
   playNotificationSoundForType,
 } from '@/atoms/notifications'
 import { appModeAtom } from '@/atoms/app-mode'
-import { tabsAtom, activeTabIdAtom, openTab, updateTabTitle } from '@/atoms/tab-atoms'
+import { tabsAtom, activeTabIdAtom, activeSessionIdAtom, openTab, updateTabTitle } from '@/atoms/tab-atoms'
 import type { AgentStreamState } from '@/atoms/agent-atoms'
 import { agentDiffUnseenChangesAtom, agentDiffUnseenFilesAtom } from '@/atoms/agent-atoms'
 import { channelsAtom } from '@/atoms/chat-atoms'
@@ -82,6 +82,7 @@ import { detectIsWindows } from '@/lib/platform'
 import { getSessionFileChangeKind, arePathsEqual, isPathWithinRoot, upsertSessionFileChange } from '@/lib/session-file-changes'
 import { buildQueuedMessageSendPayload, removeQueuedMessage, restoreQueuedMessageToFront, shouldAutoDispatchQueuedMessage } from '@/lib/agent-message-queue'
 import { buildQuotedSelectionBlock } from '@/lib/quoted-selection'
+import { createAgentStreamEventBatcher } from '@/lib/agent-stream-event-batcher'
 
 /** 触发右侧文件浏览器自动定位的写入类工具集合 */
 const WRITE_TOOLS = new Set(['Write', 'Edit', 'MultiEdit', 'NotebookEdit', 'Update'])
@@ -980,8 +981,7 @@ export function useGlobalAgentListeners(): void {
     // [FLASH-DEBUG] 事件频率计数器
     let eventCount = 0
     let lastLogTime = Date.now()
-    const cleanupEvent = window.electronAPI.onAgentStreamEvent(
-      (streamEvent: AgentStreamEvent) => {
+    const handleStreamEvent = (streamEvent: AgentStreamEvent): void => {
         // [FLASH-DEBUG] 每 2 秒输出一次事件频率
         eventCount++
         const now = Date.now()
@@ -1433,12 +1433,18 @@ export function useGlobalAgentListeners(): void {
           }
         }
         }) // unstable_batchedUpdates
-      }
-    )
+    }
+    // partial 仅保留每个会话在一帧内最新的累计全文，非 partial（尤其 final）立即处理。
+    const streamEventBatcher = createAgentStreamEventBatcher({ dispatch: handleStreamEvent })
+    const cleanupEvent = window.electronAPI.onAgentStreamEvent((streamEvent) => {
+      streamEventBatcher.push(streamEvent)
+    })
 
     // ===== 2. 流式完成 =====
     const cleanupComplete = window.electronAPI.onAgentStreamComplete(
       (data: AgentStreamCompletePayload) => {
+        // 无终态 assistant 的异常路径也不能让等待中的 partial 在完成后倒灌。
+        streamEventBatcher.clear(data.sessionId)
         console.log(`[FLASH-DEBUG] STREAM_COMPLETE for session=${data.sessionId.slice(0, 8)}, stoppedByUser=${data.stoppedByUser}, resultSubtype=${data.resultSubtype}`)
         unstable_batchedUpdates(() => {
         // 后台任务等待态：turn 主体结束但仍有后台任务在飞行，UI 进入"空闲可输入"。
@@ -1793,8 +1799,25 @@ export function useGlobalAgentListeners(): void {
     }
     window.addEventListener('focus', onWindowFocus)
 
+    const syncVisibleAgentStreamSession = (): void => {
+      const sessionId = store.get(activeSessionIdAtom)
+      const activeTab = store.get(tabsAtom).find((tab) => tab.id === store.get(activeTabIdAtom))
+      const visibleAgentSessionId = activeTab?.type === 'agent' || activeTab?.type === 'preview'
+        ? sessionId
+        : null
+      // 开发时 renderer HMR 可能先于 preload/main 重启；缺少新 IPC 不应让整个应用白屏。
+      const setVisibleAgentStreamSession = window.electronAPI.setVisibleAgentStreamSession
+      if (setVisibleAgentStreamSession) {
+        void setVisibleAgentStreamSession(visibleAgentSessionId).catch(console.error)
+      }
+    }
+    syncVisibleAgentStreamSession()
+    const unsubscribeVisibleSession = store.sub(activeSessionIdAtom, syncVisibleAgentStreamSession)
+
     return () => {
       cleanupEvent()
+      streamEventBatcher.dispose()
+      unsubscribeVisibleSession()
       cleanupComplete()
       cleanupError()
       cleanupTodoAgentSessionReady()
