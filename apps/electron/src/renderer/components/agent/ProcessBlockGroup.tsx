@@ -133,6 +133,27 @@ export function buildAssistantTurnRenderItems(
   return items
 }
 
+const MAX_STREAMING_PREVIEW_CHARS = 600
+
+/**
+ * 流式阶段只保留最后一段文本尾部，避免完整 Markdown / 工具结果树在每次 SDK 更新时重建。
+ * 结束后仍由正常渲染路径恢复完整内容和现有过程折叠。
+ */
+export function getStreamingTurnPreview(blocks: SDKContentBlock[]): string {
+  for (let index = blocks.length - 1; index >= 0; index--) {
+    const block = blocks[index]
+    if (block?.type !== 'text' || !('text' in block)) continue
+    const text = (block as { text: string }).text
+    if (!text.trim()) continue
+    const tail = text.length > MAX_STREAMING_PREVIEW_CHARS
+      ? text.slice(-MAX_STREAMING_PREVIEW_CHARS)
+      : text
+    const preview = tail.trim()
+    return text.length > MAX_STREAMING_PREVIEW_CHARS ? `…${preview}` : preview
+  }
+  return ''
+}
+
 function buildProcessGroupSummary(blocks: SDKContentBlock[]): string {
   let toolCount = 0
   let messageCount = 0

@@ -32,6 +32,8 @@ export interface ContextCompactionProgress {
 interface TaskProgressOverlayProps {
   /** 仅当前 live turn 的任务工具活动，不传历史 turn。 */
   activities: ToolActivity[]
+  /** 是否在当前流式历史区内显示任务进度，避免与内联执行面板重复。 */
+  taskProgressInline?: boolean
   streaming: boolean
   /** 与 Agent 任务并列的系统级短时操作；当前用于上下文压缩。 */
   contextCompaction?: ContextCompactionProgress
@@ -88,7 +90,7 @@ function CompactionProgressDetails({ progress }: { progress: ContextCompactionPr
  * 取代单独的“回到最下方”按钮：任务进行时展示单行进度，点击展开完整任务卡；
  * 无任务时自动退化为原箭头按钮。
  */
-export function TaskProgressOverlay({ activities, streaming, contextCompaction }: TaskProgressOverlayProps): React.ReactElement | null {
+export function TaskProgressOverlay({ activities, taskProgressInline = false, streaming, contextCompaction }: TaskProgressOverlayProps): React.ReactElement | null {
   const { isAtBottom, scrollToBottom } = useStickToBottomContext()
   const liveItems = React.useMemo(
     () => aggregateTaskItems(activities, false),
@@ -108,12 +110,12 @@ export function TaskProgressOverlay({ activities, streaming, contextCompaction }
 
   // liveMessages 在收尾时会被清空；保留最后一份任务快照，才能完成 4 秒反馈。
   React.useEffect(() => {
-    if (!hasLiveTasks || liveSignature === retainedSignature) return
+    if (taskProgressInline || !hasLiveTasks || liveSignature === retainedSignature) return
     setRetainedActivities(activities)
     setRetainedSignature(liveSignature)
     setFading(false)
     setVisible(true)
-  }, [activities, hasLiveTasks, liveSignature, retainedSignature])
+  }, [activities, hasLiveTasks, liveSignature, retainedSignature, taskProgressInline])
 
   const liveCompactionSignature = contextCompaction ? compactionSignature(contextCompaction) : ''
   React.useEffect(() => {
@@ -139,11 +141,13 @@ export function TaskProgressOverlay({ activities, streaming, contextCompaction }
     setVisible(hasLiveTasks)
   }, [streaming, contextCompaction, retainedCompaction, hasLiveTasks])
 
-  const displayActivities = hasLiveTasks ? activities : retainedActivities
-  const displayItems = hasLiveTasks
-    ? liveItems
-    : aggregateTaskItems(retainedActivities, false)
-  const displaySignature = hasLiveTasks ? liveSignature : retainedSignature
+  const displayActivities = hasLiveTasks && taskProgressInline ? [] : hasLiveTasks ? activities : retainedActivities
+  const displayItems = hasLiveTasks && taskProgressInline
+    ? []
+    : hasLiveTasks
+      ? liveItems
+      : aggregateTaskItems(retainedActivities, false)
+  const displaySignature = hasLiveTasks && taskProgressInline ? '' : hasLiveTasks ? liveSignature : retainedSignature
   const displayCompaction = contextCompaction ?? retainedCompaction
   // 上游每次 liveMessages 更新都会重建 progress 对象；超时 effect 必须依赖稳定签名，不能依赖对象引用。
   const displayCompactionSignature = displayCompaction ? compactionSignature(displayCompaction) : ''

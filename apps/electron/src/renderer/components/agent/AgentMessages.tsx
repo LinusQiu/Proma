@@ -44,6 +44,26 @@ import { getSDKCompactStatus } from '@proma/shared'
 import type { AgentStreamState } from '@/atoms/agent-atoms'
 import type { QuotedSelection } from '@/atoms/preview-atoms'
 
+const STREAMING_PREVIEW_MAX_CHARS = 600
+
+function getStreamingTextPreview(content: string): string {
+  if (!content.trim()) return ''
+  const tail = content.length > STREAMING_PREVIEW_MAX_CHARS
+    ? content.slice(-STREAMING_PREVIEW_MAX_CHARS)
+    : content
+  const preview = tail.trim()
+  return content.length > STREAMING_PREVIEW_MAX_CHARS ? `…${preview}` : preview
+}
+
+function StreamingTextPreview({ text }: { text: string }): React.ReactElement | null {
+  if (!text) return null
+  return (
+    <p className="line-clamp-4 whitespace-pre-wrap break-words text-[14px] leading-6 text-foreground/80">
+      {text}
+    </p>
+  )
+}
+
 function stableStringify(value: unknown): string {
   if (value == null || typeof value !== 'object') return JSON.stringify(value) ?? String(value)
   if (Array.isArray(value)) return `[${value.map(stableStringify).join(',')}]`
@@ -715,11 +735,14 @@ export const AgentMessages = React.memo(function AgentMessages({
   // 会导致 fallback 气泡与持久化消息同时渲染一帧（重复内容闪烁）。
   // 用原始 streamingContent 作为守卫：内容已清空且不在流式中，立即归零。
   const smoothContent = (streaming || streamingContent) ? rawSmoothContent : ''
+  const streamingPreview = React.useMemo(
+    () => getStreamingTextPreview(smoothContent),
+    [smoothContent],
+  )
   const smoothContentBlocks = React.useMemo(() => {
-    if (!smoothContent) return []
+    if (streaming || !smoothContent) return []
     return parseThinkTagsFromText(smoothContent)
-  }, [smoothContent])
-  const hasSmoothTextContent = smoothContentBlocks.some((block) => block.type === 'text')
+  }, [smoothContent, streaming])
 
   /**
    * 流式完成过渡：streaming 结束到持久化消息加载完成之间，
@@ -957,22 +980,9 @@ export const AgentMessages = React.memo(function AgentMessages({
                   />
                   <MessageContent>
                     {retrying && <RetryingNotice retrying={retrying} />}
-                    {smoothContent ? (
+                    {streamingPreview ? (
                       <>
-                        <div className={cn('space-y-2')}>
-                          {smoothContentBlocks.map((block, index) => (
-                            <ContentBlock
-                              key={index}
-                              block={block}
-                              allMessages={allSDKMessages}
-                              basePath={sessionPath || undefined}
-                              basePaths={attachedDirs}
-                              index={index}
-                              dimmed={hasSmoothTextContent && block.type !== 'text'}
-                              isStreaming={streaming}
-                            />
-                          ))}
-                        </div>
+                        <StreamingTextPreview text={streamingPreview} />
                         {streaming && <AgentRunningIndicator startedAt={startedAt} />}
                       </>
                     ) : (
@@ -990,6 +1000,7 @@ export const AgentMessages = React.memo(function AgentMessages({
         <TaskProgressOverlay
           key={sessionId}
           activities={liveTaskActivities}
+          taskProgressInline={hasLiveAssistantContent}
           streaming={streaming}
           contextCompaction={contextCompaction}
         />
@@ -997,11 +1008,12 @@ export const AgentMessages = React.memo(function AgentMessages({
           <StickyUserMessage userMessages={allUserMessagesData} />
         )}
       </Conversation>
-      <AgentHistorySelectionLayer
-        sessionId={sessionId}
-        rootRef={historySelectionRootRef}
-        onAddToAgent={onAddHistoryQuote}
-      />
+        <AgentHistorySelectionLayer
+          sessionId={sessionId}
+          rootRef={historySelectionRootRef}
+          disabled={streaming}
+          onAddToAgent={onAddHistoryQuote}
+        />
     </div>
     </BasePathsProvider>
   )

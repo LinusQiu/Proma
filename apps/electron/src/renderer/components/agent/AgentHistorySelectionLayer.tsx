@@ -39,6 +39,8 @@ interface AgentHistorySelection {
 interface AgentHistorySelectionLayerProps {
   sessionId: string
   rootRef: React.RefObject<HTMLDivElement>
+  /** 流式尾部预览与完整历史的文本偏移不同，运行中不允许创建不可恢复的历史引用。 */
+  disabled?: boolean
   /** 同一消息内的历史选区优先插入当前 Agent 富文本输入框。 */
   onAddToAgent?: (quote: QuotedSelection) => boolean
 }
@@ -82,6 +84,7 @@ function getMessageTurn(root: HTMLElement, messageElement: Element): number {
 export function AgentHistorySelectionLayer({
   sessionId,
   rootRef,
+  disabled = false,
   onAddToAgent,
 }: AgentHistorySelectionLayerProps): React.ReactElement {
   const setQuotedSelectionMap = useSetAtom(quotedSelectionMapAtom)
@@ -99,9 +102,11 @@ export function AgentHistorySelectionLayer({
 
   const clearSelection = React.useCallback((): void => {
     setSelection(null)
+    window.getSelection()?.removeAllRanges()
   }, [])
 
-  const captureSelection = React.useCallback((): void => {
+    const captureSelection = React.useCallback((): void => {
+    if (disabled) return
     const root = rootRef.current
     if (!root) return
     const activeEl = document.activeElement
@@ -175,7 +180,7 @@ export function AgentHistorySelectionLayer({
         duration: 3000,
       })
     }
-  }, [clearSelection, rootRef, sessionId])
+  }, [clearSelection, disabled, rootRef, sessionId])
 
   const scheduleCaptureSelection = React.useCallback((): void => {
     if (captureTimerRef.current != null) {
@@ -188,6 +193,10 @@ export function AgentHistorySelectionLayer({
   }, [captureSelection])
 
   React.useEffect(() => {
+    if (disabled) {
+      clearSelection()
+      return
+    }
     const onSelectionChange = (): void => {
       if (pointerSelectingRef.current) return
       const sel = window.getSelection()
@@ -232,7 +241,7 @@ export function AgentHistorySelectionLayer({
       document.removeEventListener('pointercancel', onPointerCancel, true)
       document.removeEventListener('keyup', onKeyUp, true)
     }
-  }, [clearSelection, rootRef, scheduleCaptureSelection])
+  }, [clearSelection, disabled, rootRef, scheduleCaptureSelection])
 
   const handleAddToAgent = React.useCallback((): void => {
     if (!selection) return

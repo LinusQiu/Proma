@@ -19,7 +19,8 @@ import { ImageLightbox, type LightboxImage } from '@/components/ui/image-lightbo
 import { ContentBlock } from './ContentBlock'
 import { TurnFileChangesSummary, buildTurnFileNameMap } from './TurnFileChangesSummary'
 import { TurnSkillUsageSummary } from './TurnSkillUsageSummary'
-import { ProcessBlockGroup, buildAssistantTurnRenderItems, buildCompletedToolResultIds } from './ProcessBlockGroup'
+import { TaskProgressCard } from './TaskProgressCard'
+import { ProcessBlockGroup, buildAssistantTurnRenderItems, buildCompletedToolResultIds, getStreamingTurnPreview } from './ProcessBlockGroup'
 import { extractToolResultText, TASK_TOOL_NAMES } from './task-progress'
 import { normalizeThinkTagsInContentBlocks } from './thinking-tag-parser'
 // 会话转录的纯逻辑(Turn 分组 / 快照去重 / 预览)已下沉到 @proma/session-core 作为唯一真源。
@@ -366,7 +367,16 @@ export function buildTaskProgressDataForTurn(turn: AssistantTurn): { taskActivit
 }
 
 
-// ===== AssistantTurnRenderer — 渲染一个完整的 assistant turn =====
+function StreamingTurnPreview({ text }: { text: string }): React.ReactElement | null {
+  if (!text) return null
+
+  return (
+    <p className="line-clamp-4 whitespace-pre-wrap break-words text-[14px] leading-6 text-foreground/80">
+      {text}
+    </p>
+  )
+}
+
 
 export interface AssistantTurnRendererProps {
   turn: AssistantTurn
@@ -466,20 +476,26 @@ export function AssistantTurnRenderer({ turn, allMessages, basePath, onFork, onR
     (b) => b.type === 'text' && 'text' in b && !!(b as { text: string }).text
   )
 
-  const completedToolResultIds = React.useMemo(() => {
-    return buildCompletedToolResultIds(turn.turnMessages)
-  }, [turn.turnMessages])
-  const renderItems = React.useMemo(() => {
-    return buildAssistantTurnRenderItems(topLevelBlocks, {
-      isStreaming,
-      completedToolResultIds,
-    })
-  }, [topLevelBlocks, isStreaming, completedToolResultIds])
+  const completedToolResultIds = React.useMemo(
+    () => isStreaming ? new Set<string>() : buildCompletedToolResultIds(turn.turnMessages),
+    [isStreaming, turn.turnMessages],
+  )
+  const renderItems = React.useMemo(
+    () => isStreaming
+      ? []
+      : buildAssistantTurnRenderItems(topLevelBlocks, { completedToolResultIds }),
+    [topLevelBlocks, isStreaming, completedToolResultIds],
+  )
 
-  // 本轮「文件名 → 绝对路径」映射：与 footer chips 同源，供正文内联文件引用补全裸文件名
+  // 本轮「文件名 → 绝对路径」映射只在完整输出渲染时需要。
   const turnFileMap = React.useMemo(
-    () => buildTurnFileNameMap(turn.turnMessages),
-    [turn.turnMessages]
+    () => isStreaming ? new Map<string, string>() : buildTurnFileNameMap(turn.turnMessages),
+    [isStreaming, turn.turnMessages],
+  )
+
+  const streamingTaskActivities = React.useMemo(
+    () => isStreaming ? buildTaskProgressDataForTurn(turn).taskActivities : [],
+    [isStreaming, turn],
   )
 
   // 如果只有错误消息
@@ -498,6 +514,40 @@ export function AssistantTurnRenderer({ turn, allMessages, basePath, onFork, onR
 
   // 如果没有任何内容
   if (enrichedBlocks.length === 0 && !hasError) return null
+
+  const streamingPreview = getStreamingTurnPreview(topLevelBlocks)
+
+  if (isStreaming) {
+    return (
+      <Message from="assistant">
+        <MessageHeader
+          model={turn.model ? resolveModelDisplayName(turn.model, channels) : undefined}
+          time={turn.createdAt ? formatMessageTime(turn.createdAt) : undefined}
+          logo={<AssistantLogo model={turn.model} />}
+        />
+        <MessageContent>
+          <TaskProgressCard activities={streamingTaskActivities} animate />
+          <StreamingTurnPreview text={streamingPreview} />
+          {!streamingPreview && streamingTaskActivities.length === 0 && (
+            <div className="flex min-h-[28px] items-center gap-2 text-[13px] font-light text-muted-foreground/75">
+              <Loader2 className="size-3.5 animate-spin text-primary/75" />
+              <span>Agent Running</span>
+            </div>
+          )}
+          {hasError && errorContent && (
+            <AssistantErrorTail
+              message={errorContent}
+              onRetry={onRetry}
+              onRetryInNewSession={onRetryInNewSession}
+              onCompact={onCompact}
+              onRelinkProjectRoot={onRelinkProjectRoot}
+              onRestoreProjectRoot={onRestoreProjectRoot}
+            />
+          )}
+        </MessageContent>
+      </Message>
+    )
+  }
 
   const renderTopLevelBlock = (block: SDKContentBlock, i: number): React.ReactNode => {
     // 任务进度由底部浮层统一呈现，输出记录不再重复显示任务卡。
