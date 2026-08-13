@@ -61,7 +61,7 @@ import {
   playNotificationSoundForType,
 } from '@/atoms/notifications'
 import { appModeAtom } from '@/atoms/app-mode'
-import { tabsAtom, activeTabIdAtom, openTab, updateTabTitle } from '@/atoms/tab-atoms'
+import { tabsAtom, activeTabIdAtom, activeSessionIdAtom, openTab, updateTabTitle } from '@/atoms/tab-atoms'
 import type { AgentStreamState } from '@/atoms/agent-atoms'
 import { agentDiffUnseenChangesAtom, agentDiffUnseenFilesAtom } from '@/atoms/agent-atoms'
 import { channelsAtom } from '@/atoms/chat-atoms'
@@ -91,6 +91,12 @@ const GIT_MUTATING_SUBCOMMANDS = /\bgit\s+(commit|checkout|reset|restore|stash|c
 
 function isAbsolutePath(path: string): boolean {
   return path.startsWith('/') || /^[A-Za-z]:[\\/]/.test(path)
+}
+
+function isPartialAssistantStreamEvent(event: AgentStreamEvent): boolean {
+  if (event.payload.kind !== 'sdk_message') return false
+  const message = event.payload.message as Record<string, unknown>
+  return message.type === 'assistant' && message._partial === true
 }
 
 function getParentDir(path: string): string {
@@ -980,8 +986,13 @@ export function useGlobalAgentListeners(): void {
     // [FLASH-DEBUG] 事件频率计数器
     let eventCount = 0
     let lastLogTime = Date.now()
-    const cleanupEvent = window.electronAPI.onAgentStreamEvent(
-      (streamEvent: AgentStreamEvent) => {
+
+    // 主进程已把未查看 delegation 的 partial 限制为最多 4fps；Renderer 再按帧合并，
+    // 防止多个子会话恰好同一帧到达时反复同步 Jotai/React，而非流式状态一律即时处理。
+    const pendingBackgroundPartialEvents = new Map<string, AgentStreamEvent>()
+    let backgroundPartialFrame: number | null = null
+
+    const processStreamEvent = (streamEvent: AgentStreamEvent): void => {
         // [FLASH-DEBUG] 每 2 秒输出一次事件频率
         eventCount++
         const now = Date.now()
@@ -1433,12 +1444,53 @@ export function useGlobalAgentListeners(): void {
           }
         }
         }) // unstable_batchedUpdates
+    }
+
+    const flushBackgroundPartialEvents = (): void => {
+      backgroundPartialFrame = null
+      const events = [...pendingBackgroundPartialEvents.values()]
+      pendingBackgroundPartialEvents.clear()
+      for (const event of events) processStreamEvent(event)
+    }
+
+    const flushBackgroundPartialForSession = (sessionId: string): void => {
+      const pending = pendingBackgroundPartialEvents.get(sessionId)
+      if (!pending) return
+      pendingBackgroundPartialEvents.delete(sessionId)
+      processStreamEvent(pending)
+    }
+
+    const isBackgroundDelegation = (sessionId: string): boolean => {
+      const session = store.get(agentSessionsAtom).find((item) => item.id === sessionId)
+      return Boolean(session?.sourceDelegationId) && store.get(activeSessionIdAtom) !== sessionId
+    }
+
+    const publishActiveStreamSession = (): void => {
+      void window.electronAPI.setActiveAgentStreamSession(store.get(activeSessionIdAtom))
+        .catch((error) => console.warn('[GlobalAgentListeners] 汇报活动流式会话失败:', error))
+    }
+    publishActiveStreamSession()
+    const unsubscribeActiveStreamSession = store.sub(activeSessionIdAtom, publishActiveStreamSession)
+
+    const cleanupEvent = window.electronAPI.onAgentStreamEvent((streamEvent: AgentStreamEvent) => {
+      if (isPartialAssistantStreamEvent(streamEvent) && isBackgroundDelegation(streamEvent.sessionId)) {
+        pendingBackgroundPartialEvents.set(streamEvent.sessionId, streamEvent)
+        if (backgroundPartialFrame === null) {
+          backgroundPartialFrame = requestAnimationFrame(flushBackgroundPartialEvents)
+        }
+        return
       }
-    )
+
+      // partial 的最终帧必须在 result/工具等后续事件前应用，避免终态覆盖被延迟帧反向替换。
+      flushBackgroundPartialForSession(streamEvent.sessionId)
+      processStreamEvent(streamEvent)
+    })
 
     // ===== 2. 流式完成 =====
     const cleanupComplete = window.electronAPI.onAgentStreamComplete(
       (data: AgentStreamCompletePayload) => {
+        // STREAM_COMPLETE 可以紧跟最终 partial 到达；先同步该帧，再清理 liveMessages。
+        flushBackgroundPartialForSession(data.sessionId)
         console.log(`[FLASH-DEBUG] STREAM_COMPLETE for session=${data.sessionId.slice(0, 8)}, stoppedByUser=${data.stoppedByUser}, resultSubtype=${data.resultSubtype}`)
         unstable_batchedUpdates(() => {
         // 后台任务等待态：turn 主体结束但仍有后台任务在飞行，UI 进入"空闲可输入"。
@@ -1794,6 +1846,9 @@ export function useGlobalAgentListeners(): void {
     window.addEventListener('focus', onWindowFocus)
 
     return () => {
+      if (backgroundPartialFrame !== null) cancelAnimationFrame(backgroundPartialFrame)
+      pendingBackgroundPartialEvents.clear()
+      unsubscribeActiveStreamSession()
       cleanupEvent()
       cleanupComplete()
       cleanupError()

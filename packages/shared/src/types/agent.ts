@@ -1752,8 +1752,10 @@ export const AGENT_IPC_CHANNELS = {
   WORKSPACE_MEMORY_FILE_CHANGED: 'agent:workspace-memory-file-changed',
   APPROVE_WORKSPACE_PROJECT_KNOWLEDGE_MAINTENANCE: 'agent:approve-workspace-project-knowledge-maintenance',
 
-  // 流式事件（主进程 → 渲染进程推送）
-  /** Agent 流式事件 */
+  // 流式事件
+  /** Renderer 汇报当前实际可见的 Agent 会话，仅用于主进程动态设置流式优先级。 */
+  SET_ACTIVE_STREAM_SESSION: 'agent:set-active-stream-session',
+  /** Agent 流式事件（主进程 → 渲染进程推送） */
   STREAM_EVENT: 'agent:stream:event',
   /** Agent 流式完成 */
   STREAM_COMPLETE: 'agent:stream:complete',

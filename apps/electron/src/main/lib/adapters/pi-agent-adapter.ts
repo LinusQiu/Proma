@@ -131,6 +131,8 @@ export interface PiAgentQueryOptions extends AgentQueryInput {
   onRetry?: (update: import('./pi-retry-control').PiRetryUpdate) => void
   /** 渲染进程创建的本轮流式开始时间，用于隔离迟到的 native retry 事件。 */
   retryRunStartedAt?: number
+  /** partial 助手消息的动态合并间隔；后台协作会话打开后可立即恢复前台频率。 */
+  getPartialUpdateIntervalMs?: () => number
   thinkingLevel?: AgentThinkingLevel
   maxBudgetUsd?: number
   outputFormat?: JsonSchemaOutputFormat
@@ -1544,7 +1546,7 @@ export class PiAgentAdapter implements AgentProviderAdapter {
           uuid,
         })
         if (converted?.type === 'assistant') queue.push(converted)
-      }, PI_PARTIAL_UPDATE_INTERVAL_MS)
+      }, input.getPartialUpdateIntervalMs ?? PI_PARTIAL_UPDATE_INTERVAL_MS)
 
       unsubscribe = session.subscribe((event: AgentSessionEvent) => {
         try {

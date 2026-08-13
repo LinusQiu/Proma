@@ -634,7 +634,10 @@ export class AgentOrchestrator {
   async sendMessage(
     input: AgentSendInput,
     callbacks: SessionCallbacks,
-    extensions: { piCustomTools?: ToolDefinition[] } = {},
+    extensions: {
+      piCustomTools?: ToolDefinition[]
+      getPartialUpdateIntervalMs?: () => number
+    } = {},
   ): Promise<void> {
     const { sessionId, userMessage, rawUserMessage, channelId, modelId, workspaceId: requestedWorkspaceId, additionalDirectories, permissionModeOverride, mentionedSkills, mentionedMcpServers, mentionedSessionIds, mentionedTodoIds, mentionedCalendarEventIds, automationContext, retryOfErrorUuid } = input
     const streamStartedAt = input.startedAt ?? Date.now()
@@ -1511,6 +1514,7 @@ export class AgentOrchestrator {
         onModelResolved: handleModelResolved,
         onContextWindow: handleContextWindow,
         retryRunStartedAt: streamStartedAt,
+        ...(extensions.getPartialUpdateIntervalMs && { getPartialUpdateIntervalMs: extensions.getPartialUpdateIntervalMs }),
         onRetry: (retry) => {
           this.eventBus.emit(sessionId, { kind: 'proma_event', event: { type: 'retry', ...retry } })
         },

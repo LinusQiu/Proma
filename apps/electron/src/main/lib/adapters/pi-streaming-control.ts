@@ -9,7 +9,7 @@ export interface PartialMessageCoalescer<T> {
  */
 export function createPartialMessageCoalescer<T>(
   emit: (value: T) => void,
-  intervalMs: number,
+  intervalMs: number | (() => number),
 ): PartialMessageCoalescer<T> {
   let pending: T | undefined
   let timer: ReturnType<typeof setTimeout> | undefined
@@ -31,7 +31,9 @@ export function createPartialMessageCoalescer<T>(
       pending = value
       if (timer) return
       const elapsed = Date.now() - lastEmittedAt
-      timer = setTimeout(emitPending, Math.max(0, intervalMs - elapsed))
+      // 协作子会话可在用户打开时恢复前台频率；每次排程读取最新优先级。
+      const resolvedInterval = typeof intervalMs === 'function' ? intervalMs() : intervalMs
+      timer = setTimeout(emitPending, Math.max(0, resolvedInterval - elapsed))
     },
     flush() {
       if (timer) clearTimeout(timer)

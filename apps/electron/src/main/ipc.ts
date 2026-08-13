@@ -279,7 +279,7 @@ import {
   searchAgentSessionMessages,
   searchAgentSessionReferences,
 } from './lib/agent-session-manager'
-import { runAgent, stopAgent, generateAgentTitle, saveFilesToAgentSession, saveFilesToWorkspaceFiles, isAgentSessionActive, queueAgentMessage, updateAgentPermissionMode, rewindAgentSession } from './lib/agent-service'
+import { runAgent, stopAgent, generateAgentTitle, saveFilesToAgentSession, saveFilesToWorkspaceFiles, isAgentSessionActive, queueAgentMessage, updateAgentPermissionMode, rewindAgentSession, setActiveAgentStreamSession } from './lib/agent-service'
 import { permissionService } from './lib/agent-permission-service'
 import { askUserService } from './lib/agent-ask-user-service'
 import { exitPlanService } from './lib/agent-exit-plan-service'
@@ -2803,6 +2803,17 @@ export function registerIpcHandlers(): void {
     AGENT_IPC_CHANNELS.STOP_WORKSPACE_MEMORY_WATCH,
     async (event, workspaceSlug: string): Promise<void> => {
       stopWorkspaceMemoryWatch(event.sender.id, workspaceSlug)
+    },
+  )
+
+  // Renderer 只汇报当前实际可见会话，用于将未查看 delegation partial 降频；不落盘。
+  ipcMain.handle(
+    AGENT_IPC_CHANNELS.SET_ACTIVE_STREAM_SESSION,
+    async (event, sessionId: string | null): Promise<void> => {
+      if (sessionId !== null && (typeof sessionId !== 'string' || sessionId.length === 0)) {
+        throw new Error('活动流式会话参数无效')
+      }
+      setActiveAgentStreamSession(event.sender, sessionId)
     },
   )
 

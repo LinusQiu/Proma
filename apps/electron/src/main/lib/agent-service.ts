@@ -38,6 +38,7 @@ import { getAgentSessionMeta, updateAgentSessionMeta } from './agent-session-man
 import { setAgentStopper, setHeadlessAgentRunner } from './agent-headless-runner-registry'
 import { getHeadlessAgentRunTarget } from './agent-headless-run-target'
 import { sendAgentStreamComplete } from './agent-completion-payload'
+import { resolvePartialUpdateIntervalMs } from './agent-stream-priority'
 
 // ===== 实例创建 =====
 
@@ -60,6 +61,9 @@ import('./agent-collaboration-tools').then(({ registerCollaborationEventBus }) =
  * runAgent 开始时注册，结束时清理。
  */
 const sessionWebContents = new Map<string, WebContents>()
+
+/** 每个主 Renderer 当前真正打开的 Agent 会话；仅用于流式传输优先级，不做持久化。 */
+const activeAgentSessionByWebContents = new WeakMap<WebContents, string | null>()
 
 /**
  * 已挂载 destroyed 回收钩子的 webContents 集合。
@@ -86,6 +90,21 @@ function registerWebContents(sessionId: string, wc: WebContents): void {
     for (const [sid, mappedWc] of sessionWebContents) {
       if (mappedWc === wc) sessionWebContents.delete(sid)
     }
+  })
+}
+
+/**
+ * Renderer 汇报当前可见 Agent 会话后，后台 delegation 可降至 4fps；
+ * 打开某个子会话时，此映射会让它在下一次 partial 排程恢复 20fps。
+ */
+export function setActiveAgentStreamSession(webContents: WebContents, sessionId: string | null): void {
+  activeAgentSessionByWebContents.set(webContents, sessionId)
+}
+
+function getPartialUpdateInterval(sessionId: string, webContents: WebContents): number {
+  return resolvePartialUpdateIntervalMs({
+    isDelegation: Boolean(getAgentSessionMeta(sessionId)?.sourceDelegationId),
+    isActiveSession: activeAgentSessionByWebContents.get(webContents) === sessionId,
   })
 }
 
@@ -149,6 +168,7 @@ eventBus.use((sessionId, payload, next) => {
 /** 仅主进程内部使用的单次运行扩展，绝不经 IPC 序列化。 */
 export interface AgentRunExtensions {
   piCustomTools?: ToolDefinition[]
+  getPartialUpdateIntervalMs?: () => number
 }
 
 /**
@@ -224,6 +244,8 @@ export async function runAgent(
           })
         }
       },
+    }, {
+      getPartialUpdateIntervalMs: () => getPartialUpdateInterval(input.sessionId, webContents),
     })
   } catch (err) {
     console.error('[Agent 服务] runAgent 未处理异常:', err)
@@ -335,7 +357,12 @@ export async function runAgentHeadless(
           },
         })
       },
-    }, extensions)
+    }, {
+      ...extensions,
+      getPartialUpdateIntervalMs: () => wc
+        ? getPartialUpdateInterval(runInput.sessionId, wc)
+        : resolvePartialUpdateIntervalMs({ isDelegation: Boolean(getAgentSessionMeta(runInput.sessionId)?.sourceDelegationId), isActiveSession: false }),
+    })
   } catch (err) {
     console.error('[Agent 服务] runAgentHeadless 未处理异常:', err)
     const errorMessage = err instanceof Error ? err.message : '未知错误'

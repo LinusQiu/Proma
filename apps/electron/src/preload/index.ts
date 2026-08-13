@@ -719,6 +719,9 @@ export interface ElectronAPI {
   approveWorkspaceProjectKnowledgeMaintenance: (workspaceSlug: string) => Promise<void>
 
 
+  /** 汇报主界面当前实际可见的 Agent 会话，供后台子会话流式限流。 */
+  setActiveAgentStreamSession: (sessionId: string | null) => Promise<void>
+
   /** 订阅 Agent 流式事件（返回清理函数） */
   onAgentStreamEvent: (callback: (event: AgentStreamEvent) => void) => () => void
 
@@ -2003,6 +2006,10 @@ const electronAPI: ElectronAPI = {
 
   approveWorkspaceProjectKnowledgeMaintenance: (workspaceSlug: string) => {
     return ipcRenderer.invoke(AGENT_IPC_CHANNELS.APPROVE_WORKSPACE_PROJECT_KNOWLEDGE_MAINTENANCE, workspaceSlug)
+  },
+
+  setActiveAgentStreamSession: (sessionId: string | null) => {
+    return ipcRenderer.invoke(AGENT_IPC_CHANNELS.SET_ACTIVE_STREAM_SESSION, sessionId)
   },
 
   onAgentStreamEvent: (callback: (event: AgentStreamEvent) => void) => {
