@@ -136,6 +136,9 @@ import type { AgentQueuedAttachment, AgentQueuedMessage, QueueDropPlacement } fr
 
 /** 稳定的空 SDKMessage 数组引用，避免 ?? [] 每次创建新引用 */
 const EMPTY_SDK_MESSAGES: SDKMessage[] = []
+/** 稳定的空 string 数组引用，供无附件时的 attachedDirs/attachedFiles 回退复用，
+ * 避免 ?? [] 每次渲染新建数组，破坏下游 useMemo 链与 AgentMessages 的 memo。 */
+const EMPTY_STRING_ARRAY: string[] = []
 const LONG_TEXT_ATTACHMENT_THRESHOLD = 2000
 
 function endOfToday(): number {
@@ -514,15 +517,15 @@ export function AgentView({ sessionId }: { sessionId: string }): React.ReactElem
   const openSession = useOpenSession()
   const setAttachedDirsMap = useSetAtom(agentAttachedDirectoriesMapAtom)
   const attachedDirsMap = useAtomValue(agentAttachedDirectoriesMapAtom)
-  const attachedDirs = attachedDirsMap.get(sessionId) ?? []
+  const attachedDirs = attachedDirsMap.get(sessionId) ?? EMPTY_STRING_ARRAY
   const setAttachedFilesMap = useSetAtom(agentAttachedFilesMapAtom)
   const attachedFilesMap = useAtomValue(agentAttachedFilesMapAtom)
-  const attachedFiles = attachedFilesMap.get(sessionId) ?? []
+  const attachedFiles = attachedFilesMap.get(sessionId) ?? EMPTY_STRING_ARRAY
   const wsAttachedDirsMap = useAtomValue(workspaceAttachedDirectoriesMapAtom)
-  const wsAttachedDirs = currentWorkspaceId ? (wsAttachedDirsMap.get(currentWorkspaceId) ?? []) : []
+  const wsAttachedDirs = currentWorkspaceId ? (wsAttachedDirsMap.get(currentWorkspaceId) ?? EMPTY_STRING_ARRAY) : EMPTY_STRING_ARRAY
   const setWsAttachedFilesMap = useSetAtom(workspaceAttachedFilesMapAtom)
   const wsAttachedFilesMap = useAtomValue(workspaceAttachedFilesMapAtom)
-  const wsAttachedFiles = currentWorkspaceId ? (wsAttachedFilesMap.get(currentWorkspaceId) ?? []) : []
+  const wsAttachedFiles = currentWorkspaceId ? (wsAttachedFilesMap.get(currentWorkspaceId) ?? EMPTY_STRING_ARRAY) : EMPTY_STRING_ARRAY
 
   // 按 sessionId 切片订阅 drafts/draftHtml：仅本 session 草稿变化才让 AgentView 重渲染。
   // 输入框每次按键都会写整 Map atom，若直接订阅整 Map，AgentView 跟着每键重渲染。
