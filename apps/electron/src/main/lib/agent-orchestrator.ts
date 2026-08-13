@@ -43,6 +43,7 @@ import { getPiAssistantErrorDetails, hasPiAssistantTextContent, stripPiAssistant
 import { friendlyErrorMessage, isPromptTooLongError, isThinkingSignatureError, mapAgentErrorToTypedError } from './agent-error-utils'
 import { getActiveRunRejectionMessage, shouldPersistInitialUserMessage } from './agent-send-message-policy'
 import { isSessionNotFoundError } from './error-patterns'
+import { assignChannelIdToAgentMessage } from './agent-message-channel-metadata'
 import { AgentEventBus } from './agent-event-bus'
 import { decryptApiKey, getChannelById, listChannels, persistCodexOAuthCredentials, persistXaiOAuthCredentials, resolveChannelRuntimeApiKey, resolveCodexOAuthCredentials, resolveXaiOAuthCredentials } from './channel-manager'
 import { getAdapter, fetchTitle } from '@proma/core'
@@ -708,6 +709,7 @@ export class AgentOrchestrator {
         _errorCanRetry: typedError.canRetry,
         _errorActions: typedError.actions,
       } as unknown as SDKMessage
+      assignChannelIdToAgentMessage(errorSDKMsg, channelId)
       try { appendSDKMessages(sessionId, [errorSDKMsg]) } catch (e) {
         console.error('[Agent 编排] 持久化 preflight error 失败:', e)
       }
@@ -1689,6 +1691,7 @@ export class AgentOrchestrator {
                 const hasPiPartialOutput = hasPiAssistantTextContent(assistantMsg)
                 if (hasPiPartialOutput) {
                   const partialOutput = stripPiAssistantError(assistantMsg)
+                  assignChannelIdToAgentMessage(partialOutput, channelId)
                   if (modelId) partialOutput._channelModelId = modelId
                   partialOutput._channelProvider = channel.provider
                   accumulatedMessages.push(partialOutput)
@@ -1721,6 +1724,7 @@ export class AgentOrchestrator {
                   _errorCanRetry: typedError.canRetry,
                   _errorActions: typedError.actions,
                 } as unknown as SDKMessage
+                assignChannelIdToAgentMessage(errorSDKMsg, channelId)
                 appendSDKMessages(sessionId, [errorSDKMsg])
                 console.log(`[Agent 编排] 已保存 TypedError 消息: ${typedError.code} - ${typedError.title}`)
 
@@ -1739,6 +1743,7 @@ export class AgentOrchestrator {
             if (msg.type === 'assistant' || msg.type === 'user' || msg.type === 'result') {
               const msgRecord = msg as Record<string, unknown>
               if (!msgRecord.isReplay && !isPartialMessage) {
+                assignChannelIdToAgentMessage(msg, channelId)
                 if (msg.type === 'user') {
                   // 仅累积包含 tool_result 的 user 消息（跳过 SDK 重新发出的初始用户消息）
                   const content = (msg as { message?: { content?: Array<{ type: string }> } }).message?.content
@@ -1999,6 +2004,7 @@ export class AgentOrchestrator {
               _errorTitle: errorTitle,
               _errorActions: errorActions,
             } as unknown as SDKMessage
+            assignChannelIdToAgentMessage(errMsg, channelId)
             appendSDKMessages(sessionId, [errMsg])
             console.log(`[Agent 编排] 已保存错误消息到 JSONL`)
           } catch (saveError) {
@@ -2027,6 +2033,7 @@ export class AgentOrchestrator {
         _errorCode: 'unknown_error',
         _errorTitle: '会话恢复失败',
       } as unknown as SDKMessage
+      assignChannelIdToAgentMessage(recoveryError, channelId)
       appendSDKMessages(sessionId, [recoveryError])
       failRun(recoveryFailure, getAgentSessionMessages(sessionId), { startedAt: streamStartedAt })
 
