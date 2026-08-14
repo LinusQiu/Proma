@@ -1,13 +1,12 @@
 import * as React from 'react'
-import { ChevronRight } from 'lucide-react'
+import { Brain, ChevronRight, MessageSquareText } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { getToolDisplayName, getToolIcon } from './tool-utils'
+import { getToolPhrase } from './tool-phrase'
 import type {
   SDKContentBlock,
-  SDKMessage,
-  SDKToolResultBlock,
+  SDKThinkingBlock,
   SDKToolUseBlock,
-  SDKUserMessage,
 } from '@proma/shared'
 
 interface ProcessBlockGroupProps {
@@ -20,9 +19,7 @@ interface ProcessBlockGroupProps {
 }
 
 const MAX_PROCESS_GROUP_ICONS = 4
-const PROCESS_GROUP_COLLAPSE_DURATION_MS = 500
-const PROCESS_GROUP_AUTO_COLLAPSE_SOUND_DELAY_MS = 900
-const PROCESS_GROUP_AUTO_COLLAPSE_COUNTDOWN_SECONDS = 3
+const PROCESS_GROUP_COLLAPSE_DURATION_MS = 200
 
 interface IndexedContentBlock {
   block: SDKContentBlock
@@ -35,23 +32,6 @@ export type AssistantTurnRenderItem =
 
 interface BuildAssistantTurnRenderItemsOptions {
   isStreaming?: boolean
-  completedToolResultIds?: Set<string>
-}
-
-export function buildCompletedToolResultIds(turnMessages: SDKMessage[]): Set<string> {
-  const ids = new Set<string>()
-  for (const msg of turnMessages) {
-    if (msg.type !== 'user') continue
-    const userMsg = msg as SDKUserMessage
-    const blocks = userMsg.message?.content
-    if (!Array.isArray(blocks)) continue
-    for (const b of blocks) {
-      if (b.type !== 'tool_result') continue
-      const rb = b as SDKToolResultBlock
-      ids.add(rb.tool_use_id)
-    }
-  }
-  return ids
 }
 
 function getTrailingTextStartIndex(blocks: SDKContentBlock[]): number | null {
@@ -65,44 +45,18 @@ function getTrailingTextStartIndex(blocks: SDKContentBlock[]): number | null {
   return finalStartIndex
 }
 
-function areToolsBeforeIndexCompleted(
-  blocks: SDKContentBlock[],
-  endIndex: number,
-  completedToolResultIds: Set<string> | undefined,
-): boolean {
-  if (!completedToolResultIds) return false
-
-  let hasToolUse = false
-  for (let index = 0; index < endIndex; index++) {
-    const block = blocks[index]
-    if (block?.type !== 'tool_use') continue
-    hasToolUse = true
-    const toolBlock = block as SDKToolUseBlock
-    if (!completedToolResultIds.has(toolBlock.id)) return false
-  }
-
-  // 没有 tool_use 时不认为"工具已完成"——避免流式中只有 thinking + 尾部 text
-  // 时把还可能变成中间过程的 text 提前外置。
-  return hasToolUse
-}
-
 export function buildAssistantTurnRenderItems(
   blocks: SDKContentBlock[],
   options: BuildAssistantTurnRenderItemsOptions = {},
 ): AssistantTurnRenderItem[] {
   if (blocks.length === 0) return []
 
-  // 流式阶段最后的 text 还不稳定，后续工具调用可能会把它变成中间过程。
-  // 只有当前面所有工具都有结果时，才把尾部 text 视作交付输出提前外置，降低完成瞬间的跳动。
+  // 流式阶段不提前猜测最终答案：所有过程性输出固定留在紧凑过程块内，
+  // 直到 Agent 完成后才把最终 text 呈现为顶层内容，避免末段反复跳位。
   const hasProcessBlock = blocks.some((block) => block.type === 'tool_use' || block.type === 'thinking')
   const trailingTextStartIndex = getTrailingTextStartIndex(blocks)
-  const canSplitStreamingFinalOutput = options.isStreaming
-    && hasProcessBlock
-    && trailingTextStartIndex !== null
-    && trailingTextStartIndex > 0
-    && areToolsBeforeIndexCompleted(blocks, trailingTextStartIndex, options.completedToolResultIds)
 
-  if (options.isStreaming && hasProcessBlock && !canSplitStreamingFinalOutput) {
+  if (options.isStreaming && hasProcessBlock) {
     return [{
       type: 'process-group',
       items: blocks.map((block, index) => ({ block, index })),
@@ -167,64 +121,90 @@ export function buildProcessGroupToolNames(blocks: SDKContentBlock[]): string[] 
   return toolNames
 }
 
+function firstLine(text: string): string {
+  const newline = text.indexOf('\n')
+  return newline === -1 ? text : text.slice(0, newline)
+}
+
+function latestLine(text: string): string {
+  const visible = text.trimEnd()
+  const newline = visible.lastIndexOf('\n')
+  return newline === -1 ? visible : visible.slice(newline + 1)
+}
+
+/**
+ * 过程组折叠时展示思考摘要：流式跟随最新一行，结束后保留首行作为稳定回顾。
+ * 让思考保持可感知，同时不展开整段过程占据会话空间。
+ */
+export function getProcessGroupThinkingPreview(
+  blocks: SDKContentBlock[],
+  isStreaming: boolean,
+): string | undefined {
+  for (let index = blocks.length - 1; index >= 0; index--) {
+    const block = blocks[index]
+    if (block?.type !== 'thinking') continue
+    const thinking = (block as SDKThinkingBlock).thinking
+    if (!thinking.trim()) continue
+    return isStreaming ? latestLine(thinking) : firstLine(thinking)
+  }
+  return undefined
+}
+
+type ProcessGroupLiveActivity =
+  | { kind: 'thinking'; label: string; preview: string }
+  | { kind: 'tool'; label: string; toolName: string }
+  | { kind: 'text'; label: string; preview: string }
+
+/** 返回当前正在发生的过程类型，避免把工具执行误标成思考。 */
+export function getProcessGroupLiveActivity(
+  blocks: SDKContentBlock[],
+): ProcessGroupLiveActivity | undefined {
+  for (let index = blocks.length - 1; index >= 0; index--) {
+    const block = blocks[index]
+    if (!block) continue
+
+    if (block.type === 'thinking') {
+      const thinking = (block as SDKThinkingBlock).thinking
+      if (thinking.trim()) {
+        return { kind: 'thinking', label: '思考中', preview: latestLine(thinking) }
+      }
+      continue
+    }
+
+    if (block.type === 'tool_use') {
+      const toolBlock = block as SDKToolUseBlock
+      return {
+        kind: 'tool',
+        label: getToolPhrase(toolBlock.name, toolBlock.input).loadingLabel,
+        toolName: toolBlock.name,
+      }
+    }
+
+    if (block.type === 'text') {
+      const content = (block as { text: string }).text
+      if (content.trim()) {
+        return { kind: 'text', label: '正在生成回复', preview: latestLine(content) }
+      }
+    }
+  }
+  return undefined
+}
+
 export function ProcessBlockGroup({ blocks, isStreaming, isMessageTail = false, children }: ProcessBlockGroupProps): React.ReactElement {
-  const shouldExpandByDefault = !!isStreaming
-  const [expanded, setExpanded] = React.useState(shouldExpandByDefault)
-  const [shouldRenderContent, setShouldRenderContent] = React.useState(shouldExpandByDefault)
-  const [collapseCountdown, setCollapseCountdown] = React.useState<number | null>(null)
-  const userToggledRef = React.useRef(false)
+  // 过程默认始终收起：流式时仅在标题行展示正在更新的思考摘要，避免挤占对话空间。
+  const [expanded, setExpanded] = React.useState(false)
+  const [shouldRenderContent, setShouldRenderContent] = React.useState(false)
   const wasStreamingRef = React.useRef(!!isStreaming)
-  const autoCollapseTimersRef = React.useRef<number[]>([])
   const contentRef = React.useRef<HTMLDivElement>(null)
+  const summaryRef = React.useRef<HTMLSpanElement>(null)
   const [measuredHeight, setMeasuredHeight] = React.useState<number | undefined>(undefined)
 
-  const clearAutoCollapseTimers = React.useCallback(() => {
-    for (const timer of autoCollapseTimersRef.current) window.clearTimeout(timer)
-    autoCollapseTimersRef.current = []
-  }, [])
-
   React.useEffect(() => {
-    clearAutoCollapseTimers()
-
-    if (isStreaming) {
-      setCollapseCountdown(null)
-      if (isStreaming && !wasStreamingRef.current) {
-        userToggledRef.current = false
-      }
-      if (!userToggledRef.current) {
-        setExpanded(true)
-      }
-      wasStreamingRef.current = !!isStreaming
-      return
+    if (isStreaming && !wasStreamingRef.current) {
+      setExpanded(false)
     }
-
-    const shouldAutoCollapseAfterCompletion = wasStreamingRef.current && !userToggledRef.current
-    wasStreamingRef.current = false
-
-    if (!shouldAutoCollapseAfterCompletion) {
-      if (!userToggledRef.current) {
-        setExpanded(false)
-      }
-      return
-    }
-
-    const soundDelayTimer = window.setTimeout(() => {
-      setCollapseCountdown(PROCESS_GROUP_AUTO_COLLAPSE_COUNTDOWN_SECONDS)
-
-      for (let second = PROCESS_GROUP_AUTO_COLLAPSE_COUNTDOWN_SECONDS - 1; second >= 1; second--) {
-        const elapsed = (PROCESS_GROUP_AUTO_COLLAPSE_COUNTDOWN_SECONDS - second) * 1000
-        autoCollapseTimersRef.current.push(window.setTimeout(() => setCollapseCountdown(second), elapsed))
-      }
-
-      autoCollapseTimersRef.current.push(window.setTimeout(() => {
-        setCollapseCountdown(null)
-        setExpanded(false)
-      }, PROCESS_GROUP_AUTO_COLLAPSE_COUNTDOWN_SECONDS * 1000))
-    }, PROCESS_GROUP_AUTO_COLLAPSE_SOUND_DELAY_MS)
-    autoCollapseTimersRef.current.push(soundDelayTimer)
-
-    return clearAutoCollapseTimers
-  }, [clearAutoCollapseTimers, isStreaming])
+    wasStreamingRef.current = !!isStreaming
+  }, [isStreaming])
 
   // 折叠前测量实际高度，用于丝滑的 height 过渡（子元素不 reflow，只裁剪边界）
   React.useEffect(() => {
@@ -234,39 +214,64 @@ export function ProcessBlockGroup({ blocks, isStreaming, isMessageTail = false, 
       return
     }
 
-    // 折叠时：先测量当前高度，触发 height 过渡动画，动画结束后卸载 DOM
     const el = contentRef.current
     if (el) {
-      const h = el.scrollHeight
-      setMeasuredHeight(h)
-      // 强制浏览器在下一帧开始从 h → 0 的过渡
-      requestAnimationFrame(() => setMeasuredHeight(0))
+      const height = el.scrollHeight
+      setMeasuredHeight(height)
+      const animationFrame = requestAnimationFrame(() => setMeasuredHeight(0))
+      const timer = window.setTimeout(() => setShouldRenderContent(false), PROCESS_GROUP_COLLAPSE_DURATION_MS)
+      return () => {
+        cancelAnimationFrame(animationFrame)
+        window.clearTimeout(timer)
+      }
     }
 
-    const timer = window.setTimeout(() => setShouldRenderContent(false), PROCESS_GROUP_COLLAPSE_DURATION_MS)
-    return () => window.clearTimeout(timer)
+    setShouldRenderContent(false)
   }, [expanded])
 
-  const summary = React.useMemo(
-    () => buildProcessGroupSummary(blocks),
-    [blocks],
+  const summary = React.useMemo(() => buildProcessGroupSummary(blocks), [blocks])
+  const thinkingPreview = React.useMemo(
+    () => getProcessGroupThinkingPreview(blocks, !!isStreaming),
+    [blocks, isStreaming],
+  )
+  const liveActivity = React.useMemo(
+    () => isStreaming ? getProcessGroupLiveActivity(blocks) : undefined,
+    [blocks, isStreaming],
   )
   const toolNames = React.useMemo(() => buildProcessGroupToolNames(blocks), [blocks])
   const visibleToolNames = toolNames.slice(0, MAX_PROCESS_GROUP_ICONS)
   const hiddenToolCount = Math.max(0, toolNames.length - visibleToolNames.length)
 
-  // 内容区子项渲染策略：
-  // - 流式中：每个新块有入场动画，最新一段（消息末尾过程组的最后一个 child）保持正常显示，
-  //   其余步骤轻微弱化以引导视觉重心到最下方。
-  // - 流式结束后用户展开：所有内容以正常颜色显示，无动画。
+  const inlinePreview = isStreaming
+    ? (liveActivity?.kind === 'thinking' || liveActivity?.kind === 'text' ? liveActivity.preview : undefined)
+    : thinkingPreview
+  const inlineLabel = liveActivity?.label ?? (isStreaming ? '执行中' : summary)
+  const LiveActivityIcon = liveActivity?.kind === 'tool'
+    ? getToolIcon(liveActivity.toolName)
+    : liveActivity?.kind === 'thinking'
+      ? Brain
+      : liveActivity?.kind === 'text'
+        ? MessageSquareText
+        : undefined
+
+  // 流式摘要跟随最新文本末尾，让一行展示始终反映正在发生的思考或回复。
+  React.useEffect(() => {
+    if (!inlinePreview || !summaryRef.current) return
+    const element = summaryRef.current
+    const animationFrame = requestAnimationFrame(() => {
+      element.scrollLeft = isStreaming ? element.scrollWidth - element.clientWidth : 0
+    })
+    return () => cancelAnimationFrame(animationFrame)
+  }, [inlinePreview, isStreaming])
+
   const childArray = React.Children.toArray(children)
   const renderContentChildren = (): React.ReactNode =>
-    childArray.map((child, i) => {
-      const isLast = i === childArray.length - 1
+    childArray.map((child, index) => {
+      const isLast = index === childArray.length - 1
       const dimmed = isStreaming && !(isMessageTail && isLast)
       return (
         <div
-          key={i}
+          key={index}
           className={cn(
             dimmed && 'opacity-80',
             isStreaming && 'animate-in fade-in slide-in-from-top-1 duration-200',
@@ -281,15 +286,13 @@ export function ProcessBlockGroup({ blocks, isStreaming, isMessageTail = false, 
     <div className="space-y-1.5">
       <button
         type="button"
+        aria-expanded={expanded}
         className={cn(
-          'flex max-w-full items-center gap-2 py-0.5 text-left transition-opacity group',
+          'flex w-full max-w-full items-center gap-2 py-0.5 text-left transition-opacity group',
           'hover:opacity-70',
         )}
         onClick={() => {
-          userToggledRef.current = true
-          clearAutoCollapseTimers()
-          setCollapseCountdown(null)
-          setExpanded((prev) => !prev)
+          setExpanded((previous) => !previous)
         }}
       >
         <ChevronRight
@@ -298,13 +301,25 @@ export function ProcessBlockGroup({ blocks, isStreaming, isMessageTail = false, 
             expanded && 'rotate-90',
           )}
         />
-        <span className="min-w-0 truncate text-[14px] text-muted-foreground">{summary}</span>
-        {collapseCountdown !== null && (
-          <span className="shrink-0 text-[12px] tabular-nums text-muted-foreground/50">
-            （{collapseCountdown}）
-          </span>
+        {LiveActivityIcon && (
+          <LiveActivityIcon className="size-3.5 shrink-0 text-muted-foreground/70" aria-hidden />
         )}
-        {visibleToolNames.length > 0 && (
+        <span className="shrink-0 text-[14px] text-muted-foreground">{inlineLabel}</span>
+        {inlinePreview && (
+          <>
+            <span className="size-0.5 shrink-0 rounded-full bg-muted-foreground/50" aria-hidden />
+            <span
+              ref={summaryRef}
+              className={cn(
+                'min-w-0 flex-1 overflow-hidden whitespace-nowrap text-[14px] text-muted-foreground/60',
+                !isStreaming && 'text-ellipsis',
+              )}
+            >
+              {inlinePreview}
+            </span>
+          </>
+        )}
+        {!isStreaming && visibleToolNames.length > 0 && (
           <span className="flex shrink-0 items-center gap-1 text-muted-foreground/60">
             {visibleToolNames.map((toolName) => {
               const ToolIcon = getToolIcon(toolName)
@@ -317,9 +332,7 @@ export function ProcessBlockGroup({ blocks, isStreaming, isMessageTail = false, 
               )
             })}
             {hiddenToolCount > 0 && (
-              <span className="text-[11px] tabular-nums text-muted-foreground/60">
-                +{hiddenToolCount}
-              </span>
+              <span className="text-[11px] tabular-nums text-muted-foreground/60">+{hiddenToolCount}</span>
             )}
           </span>
         )}
@@ -341,21 +354,18 @@ export function ProcessBlockGroup({ blocks, isStreaming, isMessageTail = false, 
           <div className="space-y-2">
             {renderContentChildren()}
             <button
-                type="button"
-                className="flex items-center gap-1 text-xs text-foreground/40 hover:text-foreground/70 transition-colors"
-                onClick={() => {
-                  userToggledRef.current = true
-                  clearAutoCollapseTimers()
-                  setCollapseCountdown(null)
-                  setExpanded(false)
-                }}
-              >
-                <ChevronRight className="size-3 -rotate-90" />
-                <span>收起</span>
-              </button>
-            </div>
+              type="button"
+              className="flex items-center gap-1 text-xs text-foreground/40 hover:text-foreground/70 transition-colors"
+              onClick={() => {
+                setExpanded(false)
+              }}
+            >
+              <ChevronRight className="size-3 -rotate-90" />
+              <span>收起</span>
+            </button>
           </div>
-        )}
-      </div>
+        </div>
+      )}
+    </div>
   )
 }
