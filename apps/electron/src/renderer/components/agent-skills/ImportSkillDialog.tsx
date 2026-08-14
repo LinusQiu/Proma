@@ -7,7 +7,7 @@
 
 import * as React from 'react'
 import { toast } from 'sonner'
-import { Check, Loader2, Sparkles } from 'lucide-react'
+import { Check, Loader2, Search, Sparkles } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from '@/components/ui/dialog'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
@@ -42,6 +42,7 @@ export function ImportSkillDialog({
   const [otherWorkspaces, setOtherWorkspaces] = React.useState<OtherWorkspaceSkillsGroup[]>([])
   const [selectedWorkspaceSlug, setSelectedWorkspaceSlug] = React.useState('')
   const [selectedKeys, setSelectedKeys] = React.useState<Set<string>>(new Set())
+  const [search, setSearch] = React.useState('')
   const [loadingWorkspaces, setLoadingWorkspaces] = React.useState(false)
   const [importing, setImporting] = React.useState(false)
   const requestIdRef = React.useRef(0)
@@ -60,6 +61,7 @@ export function ImportSkillDialog({
       setOtherWorkspaces([])
       setSelectedWorkspaceSlug('')
       setSelectedKeys(new Set())
+      setSearch('')
       setLoadingWorkspaces(false)
       return
     }
@@ -68,6 +70,7 @@ export function ImportSkillDialog({
     setOtherWorkspaces([])
     setSelectedWorkspaceSlug('')
     setSelectedKeys(new Set())
+    setSearch('')
     setLoadingWorkspaces(true)
 
     void (async () => {
@@ -120,6 +123,20 @@ export function ImportSkillDialog({
     () => availableWorkspaces.find((w) => w.workspaceSlug === selectedWorkspaceSlug) ?? null,
     [availableWorkspaces, selectedWorkspaceSlug],
   )
+
+  const searchQuery = search.trim().toLowerCase()
+
+  // 与主技能页搜索保持一致：按名称 / slug / 描述 / 分组关键字过滤
+  const visibleSkills = React.useMemo(() => {
+    if (!selectedWorkspace || !searchQuery) return selectedWorkspace?.skills ?? []
+    return selectedWorkspace.skills.filter(
+      (s) =>
+        s.name.toLowerCase().includes(searchQuery) ||
+        s.slug.toLowerCase().includes(searchQuery) ||
+        (s.description ?? '').toLowerCase().includes(searchQuery) ||
+        (s.group ?? '').toLowerCase().includes(searchQuery),
+    )
+  }, [selectedWorkspace, searchQuery])
 
   const selectedCount = React.useMemo(() => {
     if (!selectedWorkspace) return 0
@@ -247,11 +264,30 @@ export function ImportSkillDialog({
               <div className="mb-3 flex items-center justify-between gap-3 text-sm text-muted-foreground">
                 <span className="truncate">{selectedWorkspace.workspaceName}</span>
                 <span className="shrink-0 rounded-md bg-muted px-2 py-1 text-xs font-medium tabular-nums">
-                  {selectedWorkspace.skills.length} 个
+                  {searchQuery
+                    ? `${visibleSkills.length} / ${selectedWorkspace.skills.length} 个`
+                    : `${selectedWorkspace.skills.length} 个`}
                 </span>
               </div>
+              <div className="mb-3 flex h-8 items-center gap-2 rounded-lg border border-border/60 bg-content-area px-3 transition-colors focus-within:border-primary/40">
+                <Search size={14} className="shrink-0 text-foreground/40" />
+                <input
+                  value={search}
+                  onChange={(e) => setSearch(e.target.value)}
+                  placeholder="按名称或描述搜索 Skill..."
+                  disabled={importing}
+                  className="w-full bg-transparent text-[13px] text-foreground placeholder:text-foreground/35 focus:outline-none"
+                />
+              </div>
+              {visibleSkills.length === 0 ? (
+                <SettingsCard divided={false}>
+                  <div className="py-10 text-center text-sm text-muted-foreground">
+                    没有匹配的 Skill，试试更换搜索关键词。
+                  </div>
+                </SettingsCard>
+              ) : (
               <div className="grid gap-3 sm:grid-cols-2">
-                {selectedWorkspace.skills.map((skill) => {
+                {visibleSkills.map((skill) => {
                   const checked = selectedKeys.has(`${selectedWorkspace.workspaceSlug}/${skill.slug}`)
                   return (
                     <SettingsCard key={skill.slug} divided={false} className="overflow-hidden">
@@ -299,6 +335,7 @@ export function ImportSkillDialog({
                   )
                 })}
               </div>
+              )}
             </>
           ) : null}
         </div>
