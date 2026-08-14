@@ -34,21 +34,28 @@ export function ScrollPositionManager({ id, ready }: { id: string; ready: boolea
     if (!el || !restoredRef.current) return
 
     let saveFrame: number | null = null
+    const savePositionNow = (): void => {
+      if (!restoredRef.current) return
+      const distanceFromBottom = el.scrollHeight - el.scrollTop - el.clientHeight
+      scrollPositionCache.set(id, distanceFromBottom)
+    }
     const savePosition = (): void => {
       if (saveFrame !== null) return
       saveFrame = requestAnimationFrame(() => {
         saveFrame = null
-        const currentEl = scrollRef.current
-        if (!currentEl || !restoredRef.current) return
-        const distanceFromBottom = currentEl.scrollHeight - currentEl.scrollTop - currentEl.clientHeight
-        scrollPositionCache.set(id, distanceFromBottom)
+        savePositionNow()
       })
     }
 
     el.addEventListener('scroll', savePosition, { passive: true })
     return () => {
       el.removeEventListener('scroll', savePosition)
-      if (saveFrame !== null) cancelAnimationFrame(saveFrame)
+      if (saveFrame !== null) {
+        cancelAnimationFrame(saveFrame)
+        saveFrame = null
+        // 会话切换可能发生在下一帧前，先同步落下最后一次滚动位置。
+        savePositionNow()
+      }
     }
   }, [scrollRef, id, ready])  // ready 作为依赖：确保 ready->true 后重新运行
 

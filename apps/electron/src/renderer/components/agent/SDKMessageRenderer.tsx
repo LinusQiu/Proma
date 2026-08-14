@@ -1459,7 +1459,7 @@ export const MessageGroupRenderer = React.memo(function MessageGroupRenderer({ g
 
   if (group.type === 'user') {
     return (
-      <div className="agent-history-message" data-message-id={groupId} data-message-role="user" data-message-turn={historyTurn}>
+      <div data-message-id={groupId} data-message-role="user" data-message-turn={historyTurn}>
         <UserInputMessage message={group.message} onAgentHistoryQuoteClick={onAgentHistoryQuoteClick} />
       </div>
     )
@@ -1469,7 +1469,6 @@ export const MessageGroupRenderer = React.memo(function MessageGroupRenderer({ g
     const subtype = group.message.subtype
     // system 消息同样需要稳定 DOM 锚点，保留既有历史引用与精确回跳能力。
     const historySelectionAttributes = {
-      className: 'agent-history-message',
       'data-message-id': groupId,
       'data-message-role': 'system',
       'data-message-turn': historyTurn,
@@ -1482,7 +1481,6 @@ export const MessageGroupRenderer = React.memo(function MessageGroupRenderer({ g
   // assistant-turn
   return (
     <div
-      className="agent-history-message"
       data-message-id={groupId}
       data-message-role="assistant"
       data-message-turn={historyTurn}

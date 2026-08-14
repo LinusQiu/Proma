@@ -1216,12 +1216,6 @@
 }
 
 
-/* 历史消息按视口懒布局/绘制，保留 DOM 以支持选区、搜索和消息跳转。 */
-.agent-history-message {
-  content-visibility: auto;
-  contain-intrinsic-size: auto 180px;
-}
-
 /* Shiki 代码块样式 */
 .code-block-wrapper {
   contain: content;
