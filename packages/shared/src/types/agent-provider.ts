@@ -11,6 +11,8 @@ export type PiRunSourceEvent =
 export interface PiQueuedUserMessageInput {
   type: 'user'
   message: { role: 'user'; content: string }
+  /** 未注入动态上下文/工具提示的用户原文，仅用于 canonical transcript boundary。 */
+  raw_content?: string
   parent_tool_use_id: null
   priority?: 'now' | 'next' | 'later'
   uuid?: string

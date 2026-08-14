@@ -593,6 +593,9 @@ interface AgentTranscriptTailProps {
   sessionModelId?: string
   finalGroup?: AssistantTurn
   finalGroupStreaming: boolean
+  /** 运行中在当前 partial 之后注入、但尚未等到前一 assistant stable final 的用户边界。 */
+  pendingBoundaryGroups: MessageGroup[]
+  groupHistoryTurns: Map<MessageGroup, number>
   allMessages: SDKMessage[]
   externalMetadataSignature: string
   basePath?: string
@@ -635,6 +638,8 @@ const AgentTranscriptTail = React.memo(function AgentTranscriptTail({
   sessionModelId,
   finalGroup,
   finalGroupStreaming,
+  pendingBoundaryGroups,
+  groupHistoryTurns,
   allMessages,
   externalMetadataSignature,
   basePath,
@@ -675,7 +680,7 @@ const AgentTranscriptTail = React.memo(function AgentTranscriptTail({
   const disableActions = isStreaming && !isErrorGroup
   const showRunningState = !suppressRunning && (running || retrying !== undefined)
 
-  if (!group && !showRunningState) return null
+  if (!group && !showRunningState && pendingBoundaryGroups.length === 0) return null
 
   return (
     <>
@@ -720,7 +725,19 @@ const AgentTranscriptTail = React.memo(function AgentTranscriptTail({
           sessionModelId={sessionModelId}
         />
       )}
-      {showRunningState && (group ? (
+      {pendingBoundaryGroups.map((boundaryGroup, index) => (
+        <MessageGroupRenderer
+          key={getGroupId(boundaryGroup)}
+          group={boundaryGroup}
+          allMessages={EMPTY_SDK_MESSAGES}
+          externalMetadataSignature=""
+          basePath={basePath}
+          onAgentHistoryQuoteClick={onAgentHistoryQuoteClick}
+          historyTurn={groupHistoryTurns.get(boundaryGroup) ?? historyTurn + index + 1}
+          sessionModelId={sessionModelId}
+        />
+      ))}
+      {showRunningState && (group || pendingBoundaryGroups.length > 0 ? (
         <div className="pl-[56px] min-h-[28px]">
           {retrying && <RetryingNotice retrying={retrying} />}
           {running && <AgentRunningIndicator startedAt={startedAt} />}
@@ -990,11 +1007,25 @@ export const AgentMessages = React.memo(function AgentMessages({
     () => allGroups.filter((group) => !isCompactionControlHistoryGroup(group)),
     [allGroups],
   )
+  // queue/interrupt 用户消息可能先于当前 partial 的 stable final 进入 Jotai。它们先从
+  // transcript 主序列拿出，交给稳定 tail 在 partial 之后渲染；final 到达后 listener 会
+  // 原位插入 assistant 并解除用户边界标记，下一次分组自然恢复 canonical 顺序。
+  const pendingBoundaryGroups = React.useMemo(
+    () => visibleGroups.filter((group) => group.type === 'user'
+      && (group.message as unknown as Record<string, unknown>)._promaPendingAfterLiveAssistant === true),
+    [visibleGroups],
+  )
+  const orderedVisibleGroups = React.useMemo(
+    () => pendingBoundaryGroups.length === 0
+      ? visibleGroups
+      : visibleGroups.filter((group) => !pendingBoundaryGroups.includes(group)),
+    [pendingBoundaryGroups, visibleGroups],
+  )
   // 最后一条 assistant turn 永久使用独立 tail 槽位；partial → final 不跨父节点迁移。
-  const finalTailGroup = visibleGroups.at(-1)?.type === 'assistant-turn'
-    ? visibleGroups.at(-1) as AssistantTurn
+  const finalTailGroup = orderedVisibleGroups.at(-1)?.type === 'assistant-turn'
+    ? orderedVisibleGroups.at(-1) as AssistantTurn
     : undefined
-  const transcriptGroups = finalTailGroup ? visibleGroups.slice(0, -1) : visibleGroups
+  const transcriptGroups = finalTailGroup ? orderedVisibleGroups.slice(0, -1) : orderedVisibleGroups
 
   // 标记哪些 group 属于实时流式消息（用于 isStreaming / onFork 差异化渲染）
   const liveGroupSet = React.useMemo(() => {
@@ -1006,9 +1037,13 @@ export const AgentMessages = React.memo(function AgentMessages({
     })
   }, [allGroups, liveMessages, streaming, streamState?.startedAt])
 
+  const renderOrderedGroups = React.useMemo(
+    () => [...orderedVisibleGroups, ...pendingBoundaryGroups],
+    [orderedVisibleGroups, pendingBoundaryGroups],
+  )
   // 迷你地图只追踪 immutable transcript，避免每个 token 更新 Tab 级缓存。
   const minimapItems: MinimapItem[] = React.useMemo(
-    () => visibleGroups.map((group) => ({
+    () => renderOrderedGroups.map((group) => ({
       id: getGroupId(group),
       role: group.type === 'user' ? 'user' as const
         : group.type === 'system' ? 'status' as const
@@ -1018,7 +1053,7 @@ export const AgentMessages = React.memo(function AgentMessages({
       model: group.type === 'assistant-turn' ? group.model : undefined,
       channelId: group.type === 'assistant-turn' ? group.channelId : undefined,
     })),
-    [visibleGroups, userProfile.avatar]
+    [renderOrderedGroups, userProfile.avatar]
   )
 
   // 同步 minimap 缓存到 Tab 级别（供 Tab hover 预览使用）
@@ -1034,7 +1069,7 @@ export const AgentMessages = React.memo(function AgentMessages({
 
   // 所有用户消息的数据 — 供 StickyUserMessage 使用
   const allUserMessagesData = React.useMemo(() => {
-    return visibleGroups
+    return renderOrderedGroups
       .filter((g): g is MessageGroup & { type: 'user' } => g.type === 'user')
       .map((g) => {
         const rawText = extractUserText(g.message) ?? ''
@@ -1045,7 +1080,7 @@ export const AgentMessages = React.memo(function AgentMessages({
           attachments: files.map((f) => ({ filename: f.filename, isImage: sdkIsImageFile(f.filename) })),
         }
       })
-  }, [visibleGroups])
+  }, [renderOrderedGroups])
 
   const messageBasePaths = React.useMemo(
     () => [sessionPath, ...(attachedDirs ?? [])].filter((path): path is string => Boolean(path)),
@@ -1056,12 +1091,20 @@ export const AgentMessages = React.memo(function AgentMessages({
   const groupHistoryTurns = React.useMemo(() => {
     let turn = 0
     const turns = new Map<MessageGroup, number>()
-    for (const group of visibleGroups) {
+    for (const group of renderOrderedGroups) {
       if (group.type === 'user') turn += 1
       turns.set(group, Math.max(turn, 1))
     }
     return turns
-  }, [visibleGroups])
+  }, [renderOrderedGroups])
+  const firstPendingBoundaryTurn = pendingBoundaryGroups[0]
+    ? groupHistoryTurns.get(pendingBoundaryGroups[0])
+    : undefined
+  const tailHistoryTurn = finalTailGroup
+    ? (groupHistoryTurns.get(finalTailGroup) ?? Math.max(allUserMessagesData.length, 1))
+    : firstPendingBoundaryTurn != null
+      ? Math.max(firstPendingBoundaryTurn - 1, 1)
+      : Math.max(allUserMessagesData.length, 1)
 
   return (
     <BasePathsProvider basePaths={messageBasePaths}>
@@ -1127,12 +1170,12 @@ export const AgentMessages = React.memo(function AgentMessages({
                 sessionModelId={sessionModelId}
                 finalGroup={finalTailGroup}
                 finalGroupStreaming={finalTailGroup ? liveGroupSet.has(finalTailGroup) : false}
+                pendingBoundaryGroups={pendingBoundaryGroups}
+                groupHistoryTurns={groupHistoryTurns}
                 allMessages={allSDKMessages}
                 externalMetadataSignature={taskNotificationSignature}
                 basePath={sessionPath || undefined}
-                historyTurn={finalTailGroup
-                  ? (groupHistoryTurns.get(finalTailGroup) ?? Math.max(allUserMessagesData.length, 1))
-                  : Math.max(allUserMessagesData.length, 1)}
+                historyTurn={tailHistoryTurn}
                 running={streaming}
                 retrying={retrying}
                 startedAt={startedAt}

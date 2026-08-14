@@ -794,9 +794,44 @@ export function useGlobalAgentListeners(): void {
 
               // UUID 去重：队列用户消息已被乐观注入；assistant 这里只接收稳定 final。
               const incomingUuid = msgRecord.uuid as string | undefined
-              if (incomingUuid && current.some((message) =>
-                (message as Record<string, unknown>).uuid === incomingUuid
-              )) return prev
+              if (incomingUuid) {
+                const duplicateIndex = current.findIndex((message) =>
+                  (message as Record<string, unknown>).uuid === incomingUuid
+                )
+                if (duplicateIndex >= 0) {
+                  // Pi 已实际消费 queued user 时，即使前一 assistant 没有 stable final，也要解除
+                  // 临时 tail marker，避免异常终态清空 preview 后用户消息短暂消失。
+                  if (msgRecord.type === 'user' && msgRecord._promaQueuedBoundary === true) {
+                    const resolvedBoundary = {
+                      ...(current[duplicateIndex] as unknown as Record<string, unknown>),
+                    }
+                    delete resolvedBoundary._promaPendingAfterLiveAssistant
+                    const next = [...current]
+                    next[duplicateIndex] = resolvedBoundary as unknown as SDKMessage
+                    map.set(sessionId, next)
+                    return map
+                  }
+                  return prev
+                }
+              }
+
+              if (msgRecord.type === 'assistant') {
+                const pendingBoundaryIndex = current.findIndex((message) =>
+                  (message as Record<string, unknown>)._promaPendingAfterLiveAssistant === true
+                )
+                if (pendingBoundaryIndex >= 0) {
+                  const pendingBoundary = current[pendingBoundaryIndex] as unknown as Record<string, unknown>
+                  const resolvedBoundary = { ...pendingBoundary }
+                  delete resolvedBoundary._promaPendingAfterLiveAssistant
+                  map.set(sessionId, [
+                    ...current.slice(0, pendingBoundaryIndex),
+                    payload.message,
+                    resolvedBoundary as unknown as SDKMessage,
+                    ...current.slice(pendingBoundaryIndex + 1),
+                  ])
+                  return map
+                }
+              }
 
               map.set(sessionId, [...current, payload.message])
               return map

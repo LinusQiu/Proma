@@ -512,7 +512,8 @@ export class AgentOrchestrator {
       if (m.type === 'user') {
         const content = (m as { message?: { content?: Array<{ type: string }> } }).message?.content
         const hasToolResult = Array.isArray(content) && content.some((b) => b.type === 'tool_result')
-        if (!hasToolResult) return false
+        const isQueuedBoundary = (m as Record<string, unknown>)._promaQueuedBoundary === true
+        if (!hasToolResult && !isQueuedBoundary) return false
       }
       return true
     })
@@ -522,13 +523,15 @@ export class AgentOrchestrator {
     // 为没有 _createdAt 的消息补上时间戳（assistant 消息来自 SDK 原始输出，不含时间）
     const now = Date.now()
     const withTimestamps = toPersist.map((m) => {
-      const msg = m as Record<string, unknown>
-      if (typeof msg._createdAt === 'number') return m
+      const source = m as Record<string, unknown>
+      const msg = source._promaQueuedBoundary === true ? { ...source } : source
+      delete msg._promaQueuedBoundary
+      if (typeof msg._createdAt === 'number') return msg as unknown as SDKMessage
       // 为 result 消息附加 _durationMs
       if (m.type === 'result' && durationMs != null) {
-        return { ...m, _createdAt: now, _durationMs: durationMs } as unknown as SDKMessage
+        return { ...msg, _createdAt: now, _durationMs: durationMs } as unknown as SDKMessage
       }
-      return { ...m, _createdAt: now } as unknown as SDKMessage
+      return { ...msg, _createdAt: now } as unknown as SDKMessage
     })
 
     appendSDKMessages(sessionId, withTimestamps)
@@ -1536,6 +1539,15 @@ export class AgentOrchestrator {
         let shouldRetryFromError = false
 
         try {
+          // stop 可能发生在 active slot 建立后、Pi adapter active session 创建前。
+          // query() 前做 generation 精确闸门，避免一次已经返回的 abort 之后仍发起模型/工具执行。
+          if (this.stoppedBySessions.get(sessionId) === runGeneration) {
+            const wasStoppedByUser = this.consumeStoppedByUser(sessionId, runGeneration)
+            try { updateAgentSessionMeta(sessionId, { stoppedByUser: wasStoppedByUser }) } catch { /* 会话可能已删除 */ }
+            completeRun({ stoppedByUser: wasStoppedByUser, startedAt: streamStartedAt })
+            return
+          }
+
           // 获取异步迭代器（手动 .next() 以支持 Promise.race 中断）
           const queryIterable = this.adapter.query(queryOptions)
           const queryIterator = queryIterable[Symbol.asyncIterator]()
@@ -1751,10 +1763,14 @@ export class AgentOrchestrator {
               const msgRecord = msg as Record<string, unknown>
               if (!msgRecord.isReplay) {
                 if (msg.type === 'user') {
-                  // 仅累积包含 tool_result 的 user 消息（跳过 SDK 重新发出的初始用户消息）
+                  // 普通初始 user 由步骤 5 落盘；tool_result 与 Pi 实际消费的 queued boundary
+                  // 按 providerQueue 顺序进入本轮 buffer。
                   const content = (msg as { message?: { content?: Array<{ type: string }> } }).message?.content
                   const hasToolResult = Array.isArray(content) && content.some((b) => b.type === 'tool_result')
-                  if (hasToolResult) {
+                  const isQueuedBoundary = (msg as Record<string, unknown>)._promaQueuedBoundary === true
+                  if (isQueuedBoundary) {
+                    accumulatedMessages.push(msg)
+                  } else if (hasToolResult) {
                     accumulatedMessages.push(msg)
                   }
                 } else {
@@ -1780,6 +1796,15 @@ export class AgentOrchestrator {
               if (isPersistableSDKSystemMessage(sysMsg)) {
                 accumulatedMessages.push(msg)
               }
+            }
+
+            // queued user 被 Pi 真正消费时，立即按 providerQueue 顺序提交此前 assistant + user；
+            // 避免 user 先写盘、assistant 到 result 才补写造成历史 U → A 倒序。
+            if (msg.type === 'user' && (msg as Record<string, unknown>)._promaQueuedBoundary === true) {
+              this.persistSDKMessages(sessionId, accumulatedMessages, Date.now() - queryStartedAt)
+              accumulatedMessages.length = 0
+              const queuedUuid = (msg as Record<string, unknown>).uuid
+              if (typeof queuedUuid === 'string') this.flushPendingUserSkillActivations(sessionId, queuedUuid)
             }
 
             // Turn 结束时：持久化累积消息
@@ -1842,7 +1867,8 @@ export class AgentOrchestrator {
             if (msg.type === 'user') {
               const content = (msg as { message?: { content?: Array<{ type: string }> } }).message?.content
               const hasToolResult = Array.isArray(content) && content.some((b) => b.type === 'tool_result')
-              if (!hasToolResult) {
+              const isQueuedBoundary = (msg as Record<string, unknown>)._promaQueuedBoundary === true
+              if (!hasToolResult && !isQueuedBoundary) {
                 shouldEmit = false
               }
             }
@@ -1891,7 +1917,7 @@ export class AgentOrchestrator {
           return
 
         } catch (error) {
-          if (!this.activeSessions.has(sessionId)) {
+          if (this.stoppedBySessions.get(sessionId) === runGeneration) {
             const wasStoppedByUser = this.consumeStoppedByUser(sessionId, runGeneration)
             this.persistSDKMessages(sessionId, accumulatedMessages, Date.now() - queryStartedAt)
             try { updateAgentSessionMeta(sessionId, { stoppedByUser: wasStoppedByUser }) } catch { /* 会话可能已删除 */ }
@@ -2052,14 +2078,13 @@ export class AgentOrchestrator {
   }
 
   /**
-   * 中止指定会话的 Agent 执行
+   * 中止指定会话的 Agent 执行。
    *
-   * 先从 activeSessions 移除（供 sendMessage catch 块检测用户中止），
-   * 再调用 adapter.abort() 中止底层 SDK 进程。
+   * active slot 必须保留到旧 query 的精确终态：否则 stop 后立刻启动的新 run 会通过
+   * 并发检查，却被仍绑定旧 run 的 EventBus scope 丢弃。停止状态单独按 generation 标记。
    */
   stop(sessionId: string): void {
     const runGeneration = this.activeSessions.get(sessionId)
-    this.activeSessions.delete(sessionId)
     this.sessionPermissionModes.delete(sessionId)
     browserController.cancelSession(sessionId)
     if (runGeneration != null) this.stoppedBySessions.set(sessionId, runGeneration)
@@ -2250,6 +2275,7 @@ export class AgentOrchestrator {
     const sdkMessage = {
       type: 'user' as const,
       message: { role: 'user' as const, content: enrichedText },
+      raw_content: rawText ?? text,
       parent_tool_use_id: null,
       priority: 'now' as const,
       uuid,
@@ -2263,18 +2289,8 @@ export class AgentOrchestrator {
       })
       console.log(`[Agent 编排] 追加消息已注入: sessionId=${sessionId}, uuid=${uuid}, interrupt=${!!opts?.interrupt}`)
 
-      // 立即持久化到 JSONL — 仅存原始文本，不含 prompt 工程块（与 sendMessage 路径一致）
-      const persistMsg: SDKMessage = {
-        type: 'user',
-        uuid,
-        message: {
-          content: [{ type: 'text', text: rawText ?? text }],
-        },
-        parent_tool_use_id: null,
-        _createdAt: Date.now(),
-      } as unknown as SDKMessage
-      appendSDKMessages(sessionId, [persistMsg])
-      this.flushPendingUserSkillActivations(sessionId, uuid)
+      // canonical user boundary 会在 Pi 实际消费该 prompt 的 message_start 时进入
+      // providerQueue；由 sendMessage 事件循环按 A → U → B 顺序落盘，不能在这里抢先 append。
     } catch (error) {
       uuids.delete(uuid)
       this.clearPendingUserSkillActivations(sessionId, uuid)

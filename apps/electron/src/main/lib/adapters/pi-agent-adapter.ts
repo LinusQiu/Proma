@@ -180,6 +180,8 @@ interface ActivePiSession {
   abortRequested: boolean
   interrupting: boolean
   pendingInterruptPrompts: PendingInterruptPrompt[]
+  pendingQueuedUserBoundaries: PendingQueuedUserBoundary[]
+  directPromptStartPending: boolean
   interruptAbortPromise?: Promise<void>
   readySettled: boolean
   disposed: boolean
@@ -191,9 +193,15 @@ interface ActivePiSession {
 
 interface PendingInterruptPrompt {
   content: string
+  queuedBoundary: PendingQueuedUserBoundary
   skillActivationId?: number
   resolveAccepted: () => void
   rejectAccepted: (error: unknown) => void
+}
+
+interface PendingQueuedUserBoundary {
+  rawContent: string
+  uuid: string
 }
 
 interface PromaTaskItem {
@@ -361,6 +369,8 @@ function createActivePiSession(): ActivePiSession {
     abortRequested: false,
     interrupting: false,
     pendingInterruptPrompts: [],
+    pendingQueuedUserBoundaries: [],
+    directPromptStartPending: false,
     pendingSkillActivations: new PendingPromptSkillActivationTracker(),
     readySettled: false,
     disposed: false,
@@ -385,12 +395,16 @@ function createAbortError(): Error {
   return error
 }
 
+function rejectInterruptPrompt(active: ActivePiSession, prompt: PendingInterruptPrompt, error: unknown): void {
+  active.pendingSkillActivations.discard(prompt.skillActivationId)
+  const boundaryIndex = active.pendingQueuedUserBoundaries.indexOf(prompt.queuedBoundary)
+  if (boundaryIndex >= 0) active.pendingQueuedUserBoundaries.splice(boundaryIndex, 1)
+  prompt.rejectAccepted(error)
+}
+
 function rejectPendingInterruptPrompts(active: ActivePiSession, error: unknown): void {
   const pending = active.pendingInterruptPrompts.splice(0)
-  for (const prompt of pending) {
-    active.pendingSkillActivations.discard(prompt.skillActivationId)
-    prompt.rejectAccepted(error)
-  }
+  for (const prompt of pending) rejectInterruptPrompt(active, prompt, error)
 }
 
 async function waitForActiveSession(active: ActivePiSession): Promise<AgentSession> {
@@ -1260,6 +1274,21 @@ export class PiAgentAdapter {
     const pushMessage = (message: SDKMessage): void => {
       providerQueue.push({ kind: 'sdk_message', message })
     }
+    const pushQueuedUserBoundary = (boundary: PendingQueuedUserBoundary, sessionId: string): void => {
+      pushMessage({
+        type: 'user',
+        uuid: boundary.uuid,
+        message: { content: [{ type: 'text', text: boundary.rawContent }] },
+        parent_tool_use_id: null,
+        session_id: sessionId,
+        _promaQueuedBoundary: true,
+      } as unknown as SDKMessage)
+    }
+    const flushUnconsumedQueuedUserBoundaries = (): void => {
+      for (const boundary of active.pendingQueuedUserBoundaries.splice(0)) {
+        pushQueuedUserBoundary(boundary, input.sessionId)
+      }
+    }
     const runtimeGuard = createAgentRuntimeGuard(input)
     // 同一 session 的新请求可能在旧 IPC 事件之后开始；所有 retry 生命周期均携带这一轮标识。
     const retryRunStartedAt = input.retryRunStartedAt ?? Date.now()
@@ -1553,6 +1582,19 @@ export class PiAgentAdapter {
               if (prompt) {
                 const pending = active.pendingSkillActivations.consume(prompt)
                 if (pending) active.onSkillActivated?.(pending.activations, pending.userMessageUuid)
+
+                // queued/interrupt 用户边界必须与 Pi 实际消费顺序一起进入 providerQueue。
+                // 这样 orchestrator 能先持久化此前 stable assistant，再持久化该 user。
+                if (active.directPromptStartPending) {
+                  // 初始 prompt、compaction continuation 和 interrupt direct prompt 都由
+                  // runPromptChain 显式管理，不得提前消费 steering/follow-up FIFO。
+                  active.directPromptStartPending = false
+                } else {
+                  // Pi 的 steering/follow-up 队列是 one-at-a-time FIFO；正文可能被 Pi prompt
+                  // template 二次展开，身份不能依赖字符串相等，按已接受队列顺序消费。
+                  const boundary = active.pendingQueuedUserBoundaries.shift()
+                  if (boundary) pushQueuedUserBoundary(boundary, session.sessionId)
+                }
               }
               if (isAssistantPiMessage(event.message)) {
                 const messageId = assistantUuidFor()
@@ -1798,6 +1840,7 @@ export class PiAgentAdapter {
               break
           }
         } catch (error) {
+          flushUnconsumedQueuedUserBoundaries()
           providerQueue.fail(error)
         }
       })
@@ -1816,6 +1859,7 @@ export class PiAgentAdapter {
               isSyntheticCompactionResult: true,
               session_id: session.sessionId,
             } as unknown as SDKMessage)
+            flushUnconsumedQueuedUserBoundaries()
             providerQueue.close()
           })
           .catch((error) => {
@@ -1832,8 +1876,10 @@ export class PiAgentAdapter {
                 isSyntheticCompactionResult: true,
                 session_id: session.sessionId,
               } as unknown as SDKMessage)
+              flushUnconsumedQueuedUserBoundaries()
               providerQueue.close()
             } else {
+              flushUnconsumedQueuedUserBoundaries()
               providerQueue.fail(error)
             }
           })
@@ -1856,7 +1902,7 @@ export class PiAgentAdapter {
             const currentInterrupt = nextInterrupt
             nextInterrupt = undefined
             if (runtimeGuard.shouldStopBeforeNextTurn()) {
-              currentInterrupt?.rejectAccepted(createAbortError())
+              if (currentInterrupt) rejectInterruptPrompt(active, currentInterrupt, createAbortError())
               rejectPendingInterruptPrompts(active, createAbortError())
               return
             }
@@ -1872,7 +1918,7 @@ export class PiAgentAdapter {
                   input.skillWorkspaceSlug,
                 )
             } catch (error) {
-              currentInterrupt?.rejectAccepted(error)
+              if (currentInterrupt) rejectInterruptPrompt(active, currentInterrupt, error)
               throw error
             }
             const prompt = preparedPrompt.content
@@ -1886,10 +1932,16 @@ export class PiAgentAdapter {
             try {
               if (active.abortRequested) {
                 active.pendingSkillActivations.discard(skillActivationId)
-                currentInterrupt?.rejectAccepted(createAbortError())
+                if (currentInterrupt) rejectInterruptPrompt(active, currentInterrupt, createAbortError())
                 rejectPendingInterruptPrompts(active, createAbortError())
                 return
               }
+              if (currentInterrupt) {
+                const boundaryIndex = active.pendingQueuedUserBoundaries.indexOf(currentInterrupt.queuedBoundary)
+                if (boundaryIndex >= 0) active.pendingQueuedUserBoundaries.splice(boundaryIndex, 1)
+                pushQueuedUserBoundary(currentInterrupt.queuedBoundary, session.sessionId)
+              }
+              active.directPromptStartPending = true
               currentInterrupt?.resolveAccepted()
               await session.prompt(prompt, { source: 'rpc' })
               persistPiEntryBindings()
@@ -1927,6 +1979,7 @@ export class PiAgentAdapter {
                 pendingTerminalResult = undefined
               }
             } finally {
+              active.directPromptStartPending = false
               if (active.interrupting) {
                 session.agent.state.messages = dropTrailingAbortedAssistant(session.agent.state.messages)
               }
@@ -1952,12 +2005,21 @@ export class PiAgentAdapter {
         }
 
         runPromptChain()
-          .then(() => providerQueue.close())
-          .catch((error) => providerQueue.fail(error))
+          .then(() => {
+            // 已被 queue API 接受但因 stop/limit 尚未被 Pi 消费的用户输入仍属于
+            // canonical transcript；排在此前 stable assistant 后落盘，不能静默丢失。
+            flushUnconsumedQueuedUserBoundaries()
+            providerQueue.close()
+          })
+          .catch((error) => {
+            flushUnconsumedQueuedUserBoundaries()
+            providerQueue.fail(error)
+          })
           .finally(cleanupActiveSession)
       }
     } catch (error) {
       rejectActiveReady(active, error)
+      flushUnconsumedQueuedUserBoundaries()
       providerQueue.fail(error)
     }
 
@@ -2017,41 +2079,53 @@ export class PiAgentAdapter {
       const stopOverride = active.runtimeGuard.getLimitResultOverride()
       throw new Error(stopOverride?.errors[0] ?? 'Agent 已达到运行限制，无法继续追加消息')
     }
-    if (options?.interrupt) {
-      const accepted = new Promise<void>((resolve, reject) => {
-        active.pendingInterruptPrompts.push({
-          content,
-          skillActivationId,
-          resolveAccepted: resolve,
-          rejectAccepted: reject,
-        })
-      })
-      accepted.catch(() => {})
-      if (session.isStreaming) {
-        // Pi 没有单独的 interrupt()；公开取消 API 是 abort()。
-        // 这里把 abort 产生的内部 aborted 终态压住，再由 query 的 prompt chain 发送新消息。
-        active.interrupting = true
-        active.interruptAbortPromise ??= session.abort()
-          .finally(() => {
-            active.interruptAbortPromise = undefined
-          })
-        await active.interruptAbortPromise
-      }
-      await accepted
-      options.onAccepted?.()
-      return
+    const queuedBoundary: PendingQueuedUserBoundary = {
+      rawContent: message.raw_content ?? message.message.content,
+      uuid: message.uuid ?? randomUUID(),
     }
+    active.pendingQueuedUserBoundaries.push(queuedBoundary)
+    const discardQueuedBoundary = (): void => {
+      const index = active.pendingQueuedUserBoundaries.indexOf(queuedBoundary)
+      if (index >= 0) active.pendingQueuedUserBoundaries.splice(index, 1)
+    }
+
     try {
+      if (options?.interrupt) {
+        const accepted = new Promise<void>((resolve, reject) => {
+          active.pendingInterruptPrompts.push({
+            content,
+            queuedBoundary,
+            skillActivationId,
+            resolveAccepted: resolve,
+            rejectAccepted: reject,
+          })
+        })
+        accepted.catch(() => {})
+        if (session.isStreaming) {
+          // Pi 没有单独的 interrupt()；公开取消 API 是 abort()。
+          // 这里把 abort 产生的内部 aborted 终态压住，再由 query 的 prompt chain 发送新消息。
+          active.interrupting = true
+          active.interruptAbortPromise ??= session.abort()
+            .finally(() => {
+              active.interruptAbortPromise = undefined
+            })
+          await active.interruptAbortPromise
+        }
+        await accepted
+        options.onAccepted?.()
+        return
+      }
       if (message.priority === 'now') {
         await session.steer(content)
       } else {
         await session.followUp(content)
       }
+      options?.onAccepted?.()
     } catch (error) {
+      discardQueuedBoundary()
       active.pendingSkillActivations.discard(skillActivationId)
       throw error
     }
-    options?.onAccepted?.()
   }
 
   async cancelQueuedMessage(_sessionId: string, _messageUuid: string): Promise<void> {
