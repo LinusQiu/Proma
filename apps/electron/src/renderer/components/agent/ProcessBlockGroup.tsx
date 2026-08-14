@@ -264,19 +264,15 @@ export function ProcessBlockGroup({ blocks, isStreaming, isMessageTail = false, 
     return () => cancelAnimationFrame(animationFrame)
   }, [inlinePreview, isStreaming])
 
+  // 过程组会在工具完成时因结果状态更新而重渲染。这里不为已挂载的步骤附加入场动画，
+  // 否则相邻的 thinking 块会随工具状态一起重复淡入，形成闪烁。
   const childArray = React.Children.toArray(children)
   const renderContentChildren = (): React.ReactNode =>
     childArray.map((child, index) => {
       const isLast = index === childArray.length - 1
       const dimmed = isStreaming && !(isMessageTail && isLast)
       return (
-        <div
-          key={index}
-          className={cn(
-            dimmed && 'opacity-80',
-            isStreaming && 'animate-in fade-in slide-in-from-top-1 duration-200',
-          )}
-        >
+        <div key={index} className={cn(dimmed && 'opacity-80')}>
           {child}
         </div>
       )
