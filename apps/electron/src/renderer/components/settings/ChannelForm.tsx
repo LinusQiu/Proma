@@ -431,6 +431,7 @@ export function ChannelForm({ channel, onSaved, onCancel }: ChannelFormProps): R
         ])
       } else if (p === 'zhipu' || p === 'zhipu-coding' || p === 'zhipu-coding-team') {
         setModels([
+          { id: 'glm-5.3', name: 'GLM-5.3', enabled: true },
           { id: 'glm-5.2', name: 'GLM-5.2', enabled: true },
           { id: 'glm-5.1', name: 'GLM-5.1', enabled: false },
         ])
