@@ -37,8 +37,9 @@ import { getAgentWorkspaceBySlug, getLocalProjectRootStatus, getProjectFilesPath
 import { getAgentSessionMeta, updateAgentSessionMeta } from './agent-session-manager'
 import { setAgentStopper, setHeadlessAgentRunner } from './agent-headless-runner-registry'
 import { getHeadlessAgentRunTarget } from './agent-headless-run-target'
-import { sendAgentStreamComplete } from './agent-completion-payload'
+import { ensureAgentRunStartedAt, sendAgentStreamComplete } from './agent-completion-payload'
 import { AgentStreamForwarder } from './agent-stream-forwarder'
+import { AgentTranscriptDeltaEncoder } from './agent-transcript-delta-encoder'
 
 // ===== 实例创建 =====
 
@@ -64,6 +65,8 @@ const sessionWebContents = new Map<string, WebContents>()
 /** 每个 renderer 当前可见的 Agent 会话；仅该会话维持 20fps partial。 */
 const visibleAgentSessionByWebContents = new WeakMap<WebContents, string | null>()
 const streamForwarder = new AgentStreamForwarder()
+/** renderer 专用：把已合帧的累计 assistant partial 编码为 canonical delta。 */
+const transcriptDeltaEncoder = new AgentTranscriptDeltaEncoder()
 
 /**
  * 已挂载 destroyed 回收钩子的 webContents 集合。
@@ -82,7 +85,10 @@ const wcWithCleanupHook = new WeakSet<WebContents>()
 function registerWebContents(sessionId: string, wc: WebContents): void {
   // 同一 sessionId 切换 renderer 时，先丢弃捕获旧 wc.send 的等待 partial，避免投递到旧窗口。
   const previousWebContents = sessionWebContents.get(sessionId)
-  if (previousWebContents && previousWebContents !== wc) streamForwarder.clear(sessionId)
+  if (previousWebContents && previousWebContents !== wc) {
+    streamForwarder.clear(sessionId)
+    transcriptDeltaEncoder.clear(sessionId)
+  }
   // 旧 wc 的 destroyed 钩子仍由 WeakSet 持有，触发时会扫描 sessionWebContents 清理所有指向它的条目。
   sessionWebContents.set(sessionId, wc)
   if (wcWithCleanupHook.has(wc)) return
@@ -93,6 +99,7 @@ function registerWebContents(sessionId: string, wc: WebContents): void {
       if (mappedWc === wc) {
         sessionWebContents.delete(sid)
         streamForwarder.clear(sid)
+        transcriptDeltaEncoder.clear(sid)
       }
     }
     visibleAgentSessionByWebContents.delete(wc)
@@ -148,7 +155,10 @@ eventBus.use((sessionId, payload, next) => {
     try {
       streamForwarder.forward(
         { sessionId, payload } as AgentStreamEvent,
-        (event) => wc.send(AGENT_IPC_CHANNELS.STREAM_EVENT, event),
+        (event) => wc.send(
+          AGENT_IPC_CHANNELS.STREAM_EVENT,
+          transcriptDeltaEncoder.encode(event),
+        ),
         visibleAgentSessionByWebContents.get(wc) === sessionId,
       )
     } catch (err) {
@@ -185,8 +195,11 @@ export async function runAgent(
   input: AgentSendInput,
   webContents: WebContents,
 ): Promise<void> {
+  // service 入口先固定 run scope，确保 orchestrator 初始化早期抛错时 completion 仍可释放 renderer 运行锁。
+  const runInput = ensureAgentRunStartedAt(input)
+  const startedAt = runInput.startedAt
   // 更新 webContents 映射（允许覆盖 — 由 orchestrator.activeSessions 处理真正的并发保护）
-  registerWebContents(input.sessionId, webContents)
+  registerWebContents(runInput.sessionId, webContents)
   // 开始新一轮执行时清除"完成未确认"标记
   try {
     updateAgentSessionMeta(input.sessionId, { completedButUnconfirmed: false })
@@ -207,7 +220,7 @@ export async function runAgent(
     } catch { /* 新会话可能尚未写入索引 */ }
   }
   try {
-    await orchestrator.sendMessage(input, {
+    await orchestrator.sendMessage(runInput, {
       onError: (error) => {
         if (!webContents.isDestroyed()) {
           webContents.send(AGENT_IPC_CHANNELS.STREAM_ERROR, {
@@ -219,7 +232,7 @@ export async function runAgent(
       onComplete: (opts) => {
         publishRunStopped(input.sessionId, opts?.stoppedByUser, opts?.startedAt)
         if (!webContents.isDestroyed()) {
-          sendAgentStreamComplete(webContents, input, {
+          sendAgentStreamComplete(webContents, runInput, {
             stoppedByUser: opts?.stoppedByUser ?? false,
             startedAt: opts?.startedAt,
             resultSubtype: opts?.resultSubtype,
@@ -230,10 +243,10 @@ export async function runAgent(
           })
         }
       },
-      onRunStarted: ({ startedAt }) => {
-        eventBus.emit(input.sessionId, {
+      onRunStarted: ({ startedAt: runStartedAt }) => {
+        eventBus.emit(runInput.sessionId, {
           kind: 'proma_event',
-          event: { type: 'run_started', startedAt },
+          event: { type: 'run_started', startedAt: runStartedAt },
         })
       },
       onTitleUpdated: (title) => {
@@ -257,8 +270,9 @@ export async function runAgent(
         sessionId: input.sessionId,
         error: errorMessage,
       })
-      sendAgentStreamComplete(webContents, input, {
+      sendAgentStreamComplete(webContents, runInput, {
         stoppedByUser: false,
+        startedAt,
       })
     }
   } finally {
@@ -267,6 +281,7 @@ export async function runAgent(
     if (!orchestrator.isActive(input.sessionId)) {
       sessionWebContents.delete(input.sessionId)
       streamForwarder.clear(input.sessionId)
+      transcriptDeltaEncoder.clear(input.sessionId)
     }
   }
 }
@@ -294,8 +309,8 @@ export async function runAgentHeadless(
     callbacks.originSessionId,
     getMainRendererWebContents,
   )
-  const runInput: AgentSendInput = input.startedAt != null ? input : { ...input, startedAt: Date.now() }
-  const startedAt = runInput.startedAt!
+  const runInput = ensureAgentRunStartedAt(input)
+  const startedAt = runInput.startedAt
   if (wc) {
     registerWebContents(runInput.sessionId, wc)
   }
@@ -376,6 +391,7 @@ export async function runAgentHeadless(
     if (!orchestrator.isActive(runInput.sessionId)) {
       sessionWebContents.delete(runInput.sessionId)
       streamForwarder.clear(runInput.sessionId)
+      transcriptDeltaEncoder.clear(runInput.sessionId)
     }
   }
 }

@@ -645,10 +645,49 @@ export type PromaEvent =
 /** 外部入口触发 Agent 运行的来源 */
 export type AgentExternalRunSource = 'feishu' | 'dingtalk' | 'wechat' | 'bridge' | 'delegation'
 
-/** IPC 传输的统一 payload（替代 AgentEvent） */
+/** assistant partial 的增量块操作。 */
+export type AgentAssistantDeltaOperation =
+  | { type: 'append_text'; blockIndex: number; text: string }
+  | { type: 'append_thinking'; blockIndex: number; thinking: string }
+  | { type: 'append_block'; block: SDKContentBlock }
+  | { type: 'replace_block'; blockIndex: number; block: SDKContentBlock }
+  | { type: 'truncate_blocks'; length: number }
+
+/** assistant partial 中可能变化的轻量消息元数据。 */
+export interface AgentAssistantDeltaMetadata {
+  usage?: SDKAssistantMessage['message']['usage']
+  model?: string
+  stopReason?: string
+  parentToolUseId?: string | null
+  sessionId?: string
+  channelModelId?: string
+  channelId?: string
+  channelProvider?: ProviderType
+}
+
+/**
+ * main → renderer 的 canonical assistant 增量。
+ *
+ * reset 只用于首帧或结构无法安全增量表达时；正常文本流只传 append_text，
+ * 避免累计全文在 main、IPC、Jotai 和 React 之间重复复制。
+ */
+export interface AgentAssistantMessageDelta {
+  kind: 'assistant_message_delta'
+  messageId: string
+  sequence: number
+  runStartedAt?: number
+  reset?: SDKAssistantMessage
+  operations: AgentAssistantDeltaOperation[]
+  metadata?: AgentAssistantDeltaMetadata
+}
+
+/** 主进程内部 EventBus 的统一 payload（替代 AgentEvent）。 */
 export type AgentStreamPayload =
   | { kind: 'sdk_message'; message: SDKMessage }
   | { kind: 'proma_event'; event: PromaEvent }
+
+/** Electron renderer IPC 在内部 payload 之外额外支持 canonical assistant delta。 */
+export type AgentRendererStreamPayload = AgentStreamPayload | AgentAssistantMessageDelta
 
 // ===== Agent 会话管理 =====
 
@@ -1275,8 +1314,8 @@ export interface StopTaskInput {
 export interface AgentStreamEvent {
   /** 会话 ID */
   sessionId: string
-  /** 事件数据（新格式） */
-  payload: AgentStreamPayload
+  /** 事件数据（renderer 支持 canonical assistant delta） */
+  payload: AgentRendererStreamPayload
   /** @deprecated 兼容旧格式，Phase 2 后移除 */
   event?: AgentEvent
 }

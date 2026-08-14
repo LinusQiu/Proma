@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'bun:test'
-import { applyAgentEvent, clearAgentStreamError, isRetryEventForCurrentStream, type AgentStreamState } from './agent-atoms'
+import { applyAgentLiveUpdate, clearAgentStreamError, isRetryEventForCurrentStream, type AgentStreamState } from './agent-atoms'
 
 function createStreamState(overrides: Partial<AgentStreamState> = {}): AgentStreamState {
   return {
@@ -17,7 +17,7 @@ function createStreamState(overrides: Partial<AgentStreamState> = {}): AgentStre
 
 describe('Agent 上下文压缩状态', () => {
   test('given Pi 手动压缩提供预估 token when 压缩完成 then 显示预估值并清除旧明细', () => {
-    const result = applyAgentEvent(createStreamState(), {
+    const result = applyAgentLiveUpdate(createStreamState(), {
       type: 'compact_complete',
       status: 'success',
       estimatedTokensAfter: 32_000,
@@ -35,12 +35,12 @@ describe('Agent 上下文压缩状态', () => {
   })
 
   test('given 压缩后的预估值 when 当前压缩操作的收尾 result 没有 usage then 保留预估状态', () => {
-    const compacted = applyAgentEvent(createStreamState(), {
+    const compacted = applyAgentLiveUpdate(createStreamState(), {
       type: 'compact_complete',
       status: 'success',
       estimatedTokensAfter: 32_000,
     })
-    const result = applyAgentEvent(compacted, { type: 'complete' })
+    const result = applyAgentLiveUpdate(compacted, { type: 'complete' })
 
     expect(result).toMatchObject({
       inputTokens: 32_000,
@@ -49,12 +49,12 @@ describe('Agent 上下文压缩状态', () => {
   })
 
   test('given 压缩后的预估值 when 收到零 token result then 保留预估状态', () => {
-    const compacted = applyAgentEvent(createStreamState(), {
+    const compacted = applyAgentLiveUpdate(createStreamState(), {
       type: 'compact_complete',
       status: 'success',
       estimatedTokensAfter: 32_000,
     })
-    const result = applyAgentEvent(compacted, {
+    const result = applyAgentLiveUpdate(compacted, {
       type: 'complete',
       usage: {
         inputTokens: 0,
@@ -71,12 +71,12 @@ describe('Agent 上下文压缩状态', () => {
   })
 
   test('given 压缩后的预估值 when 下一轮收到真实 usage then 用真实值覆盖预估状态', () => {
-    const compacted = applyAgentEvent(createStreamState(), {
+    const compacted = applyAgentLiveUpdate(createStreamState(), {
       type: 'compact_complete',
       status: 'success',
       estimatedTokensAfter: 32_000,
     })
-    const result = applyAgentEvent(compacted, {
+    const result = applyAgentLiveUpdate(compacted, {
       type: 'usage_update',
       usage: {
         inputTokens: 36_000,
@@ -94,12 +94,12 @@ describe('Agent 上下文压缩状态', () => {
   })
 
   test('given 压缩后的预估值 when 下一轮仅在 result 返回 usage then 用真实值覆盖预估状态', () => {
-    const compacted = applyAgentEvent(createStreamState(), {
+    const compacted = applyAgentLiveUpdate(createStreamState(), {
       type: 'compact_complete',
       status: 'success',
       estimatedTokensAfter: 32_000,
     })
-    const result = applyAgentEvent(compacted, {
+    const result = applyAgentLiveUpdate(compacted, {
       type: 'complete',
       usage: {
         inputTokens: 40_000,
@@ -115,7 +115,7 @@ describe('Agent 上下文压缩状态', () => {
   })
 
   test('given 没有 Pi 预估 token 的压缩完成事件 when 处理 then 保持既有上下文用量', () => {
-    const result = applyAgentEvent(createStreamState(), { type: 'compact_complete', status: 'success' })
+    const result = applyAgentLiveUpdate(createStreamState(), { type: 'compact_complete', status: 'success' })
 
     expect(result).toMatchObject({
       isCompacting: false,
@@ -125,13 +125,14 @@ describe('Agent 上下文压缩状态', () => {
   })
 
   test('given 压缩成功 when 同一流开始下一项工具工作 then 清除压缩终态并恢复正常进度', () => {
-    const compacting = applyAgentEvent(createStreamState(), { type: 'compacting' })
-    const compacted = applyAgentEvent(compacting, { type: 'compact_complete', status: 'success' })
-    const resumed = applyAgentEvent(compacted, {
+    const compacting = applyAgentLiveUpdate(createStreamState(), { type: 'compacting' })
+    const compacted = applyAgentLiveUpdate(compacting, { type: 'compact_complete', status: 'success' })
+    const resumed = applyAgentLiveUpdate(compacted, {
       type: 'tool_start',
       toolName: 'TaskCreate',
       toolUseId: 'resume-task',
       input: {},
+      isFinal: false,
     })
 
     expect(compacted).toMatchObject({
@@ -148,9 +149,9 @@ describe('Agent 上下文压缩状态', () => {
   })
 
   test('given 压缩成功 when 当前流直接结束 then 保留终态反馈给短时完成提示', () => {
-    const compacting = applyAgentEvent(createStreamState(), { type: 'compacting' })
-    const compacted = applyAgentEvent(compacting, { type: 'compact_complete', status: 'success' })
-    const result = applyAgentEvent(compacted, { type: 'complete' })
+    const compacting = applyAgentLiveUpdate(createStreamState(), { type: 'compacting' })
+    const compacted = applyAgentLiveUpdate(compacting, { type: 'compact_complete', status: 'success' })
+    const result = applyAgentLiveUpdate(compacted, { type: 'complete' })
 
     expect(result).toMatchObject({
       compactInFlight: true,
@@ -172,7 +173,7 @@ describe('Agent retry 状态机', () => {
   }
 
   test('given retry 已安排 when 实际请求尚未开始 then 不把它记入执行历史', () => {
-    const scheduled = applyAgentEvent(createStreamState({ startedAt: runStartedAt }), {
+    const scheduled = applyAgentLiveUpdate(createStreamState({ startedAt: runStartedAt }), {
       type: 'retrying',
       attempt: 8,
       maxAttempts: 8,
@@ -193,7 +194,7 @@ describe('Agent retry 状态机', () => {
   })
 
   test('given 第 8 次 retry 已实际开始且最终耗尽 when 更新终态 then 历史不重复追加第 8 项', () => {
-    const started = applyAgentEvent(createStreamState({ startedAt: runStartedAt }), {
+    const started = applyAgentLiveUpdate(createStreamState({ startedAt: runStartedAt }), {
       type: 'retry_attempt',
       attemptData: retryAttempt,
       runStartedAt,
@@ -201,7 +202,7 @@ describe('Agent retry 状态机', () => {
       totalAttempt: 8,
       maxTotalAttempts: 8,
     })
-    const exhausted = applyAgentEvent(started, {
+    const exhausted = applyAgentLiveUpdate(started, {
       type: 'retry_failed',
       finalAttempt: { ...retryAttempt, errorMessage: '最终请求仍然失败', reason: '最终请求仍然失败' },
       runStartedAt,
@@ -216,13 +217,13 @@ describe('Agent retry 状态机', () => {
   })
 
   test('given retry 成功 when 后续输出到达 then 成功状态被自然收起', () => {
-    const running = applyAgentEvent(createStreamState({ startedAt: runStartedAt }), {
+    const running = applyAgentLiveUpdate(createStreamState({ startedAt: runStartedAt }), {
       type: 'retry_attempt',
       attemptData: retryAttempt,
       runStartedAt,
       maxAttempts: 8,
     })
-    const succeeded = applyAgentEvent(running, {
+    const succeeded = applyAgentLiveUpdate(running, {
       type: 'retry_cleared',
       runStartedAt,
       attempt: 8,
@@ -230,12 +231,12 @@ describe('Agent retry 状态机', () => {
     })
 
     expect(succeeded.retrying?.phase).toBe('succeeded')
-    expect(applyAgentEvent(succeeded, { type: 'text_delta', text: '已恢复' }).retrying).toBeUndefined()
+    expect(applyAgentLiveUpdate(succeeded, { type: 'assistant_progress' }).retrying).toBeUndefined()
   })
 
   test('given 旧 run 的 retry 终态 when 新流已经开始 then 忽略迟到事件', () => {
     const current = createStreamState({ startedAt: runStartedAt + 1 })
-    expect(applyAgentEvent(current, {
+    expect(applyAgentLiveUpdate(current, {
       type: 'retry_cancelled',
       runStartedAt,
       attempt: 1,
@@ -249,13 +250,13 @@ describe('Agent retry 状态机', () => {
   })
 
   test('given retry 终态或错误 when STREAM_COMPLETE 尚未到达 then 不提前释放运行锁', () => {
-    const exhausted = applyAgentEvent(createStreamState({ startedAt: runStartedAt }), {
+    const exhausted = applyAgentLiveUpdate(createStreamState({ startedAt: runStartedAt }), {
       type: 'retry_failed',
       finalAttempt: retryAttempt,
       runStartedAt,
       maxAttempts: 8,
     })
-    const cancelled = applyAgentEvent(createStreamState({ startedAt: runStartedAt }), {
+    const cancelled = applyAgentLiveUpdate(createStreamState({ startedAt: runStartedAt }), {
       type: 'retry_cancelled',
       runStartedAt,
       attempt: 1,
@@ -265,7 +266,7 @@ describe('Agent retry 状态机', () => {
 
     expect(exhausted.running).toBe(true)
     expect(cancelled.running).toBe(true)
-    expect(applyAgentEvent(createStreamState(), { type: 'error', message: '终态错误' }).running).toBe(true)
+    expect(applyAgentLiveUpdate(createStreamState(), { type: 'error', message: '终态错误' }).running).toBe(true)
   })
 })
 

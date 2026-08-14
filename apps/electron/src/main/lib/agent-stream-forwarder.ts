@@ -1,4 +1,4 @@
-import type { AgentStreamEvent, AgentStreamPayload, SDKMessage } from '@proma/shared'
+import type { AgentRendererStreamPayload, AgentStreamEvent, SDKMessage } from '@proma/shared'
 
 export const FOREGROUND_PARTIAL_INTERVAL_MS = 50
 export const BACKGROUND_PARTIAL_INTERVAL_MS = 250
@@ -17,7 +17,7 @@ export interface AgentStreamForwarderOptions {
   cancel?: (timer: TimerHandle) => void
 }
 
-function isPartialAssistantPayload(payload: AgentStreamPayload): boolean {
+function isPartialAssistantPayload(payload: AgentRendererStreamPayload): boolean {
   return payload.kind === 'sdk_message'
     && (payload.message as SDKMessage & { _partial?: unknown })._partial === true
 }
