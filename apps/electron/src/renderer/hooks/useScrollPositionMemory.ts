@@ -33,13 +33,23 @@ export function ScrollPositionManager({ id, ready }: { id: string; ready: boolea
     const el = scrollRef.current
     if (!el || !restoredRef.current) return
 
+    let saveFrame: number | null = null
     const savePosition = (): void => {
-      const distanceFromBottom = el.scrollHeight - el.scrollTop - el.clientHeight
-      scrollPositionCache.set(id, distanceFromBottom)
+      if (saveFrame !== null) return
+      saveFrame = requestAnimationFrame(() => {
+        saveFrame = null
+        const currentEl = scrollRef.current
+        if (!currentEl || !restoredRef.current) return
+        const distanceFromBottom = currentEl.scrollHeight - currentEl.scrollTop - currentEl.clientHeight
+        scrollPositionCache.set(id, distanceFromBottom)
+      })
     }
 
     el.addEventListener('scroll', savePosition, { passive: true })
-    return () => el.removeEventListener('scroll', savePosition)
+    return () => {
+      el.removeEventListener('scroll', savePosition)
+      if (saveFrame !== null) cancelAnimationFrame(saveFrame)
+    }
   }, [scrollRef, id, ready])  // ready 作为依赖：确保 ready->true 后重新运行
 
   // id 变化时重置恢复标记

@@ -188,22 +188,29 @@ export function ScrollMinimap({ items }: ScrollMinimapProps): React.ReactElement
       if (hoveredRef.current) updateCenterVisible()
     }, { root: el, threshold: 0 })
 
+    let updateFrame: number | null = null
+    const scheduleUpdate = (): void => {
+      if (updateFrame !== null) return
+      updateFrame = requestAnimationFrame(() => {
+        updateFrame = null
+        updateThumb()
+        if (hoveredRef.current) updateCenterVisible()
+      })
+    }
+
     updateCenterVisibleRef.current = updateCenterVisible
     for (const message of el.querySelectorAll<HTMLElement>('[data-message-id]')) observer.observe(message)
     updateThumb()
 
-    const onScroll = (): void => {
-      updateThumb()
-      if (hoveredRef.current) updateCenterVisible()
-    }
-    el.addEventListener('scroll', onScroll, { passive: true })
-    const resizeObserver = new ResizeObserver(updateThumb)
+    el.addEventListener('scroll', scheduleUpdate, { passive: true })
+    const resizeObserver = new ResizeObserver(scheduleUpdate)
     resizeObserver.observe(el)
     const content = el.firstElementChild
     if (content) resizeObserver.observe(content)
 
     return () => {
-      el.removeEventListener('scroll', onScroll)
+      el.removeEventListener('scroll', scheduleUpdate)
+      if (updateFrame !== null) cancelAnimationFrame(updateFrame)
       observer.disconnect()
       resizeObserver.disconnect()
       updateCenterVisibleRef.current = null
