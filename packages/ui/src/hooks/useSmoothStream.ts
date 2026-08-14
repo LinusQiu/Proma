@@ -127,19 +127,15 @@ export function useSmoothStream({
   const renderLoop = useCallback((currentTime: number) => {
     const queue = chunkQueueRef.current
 
-    // 队列为空
+    // 队列为空时暂停，而不是在整个流期间维持空转 rAF。下一段 content
+    // 到达后下面的启动 effect 会重新拉起；这允许 Agent 同一 turn 的多个 block
+    // 各自平滑，而不会为已完成 block 永久占用 animation frame。
     if (queue.length === 0) {
-      if (streamDoneRef.current) {
-        // 流结束 + 队列空 → 同步最终内容并停止
-        if (displayedRef.current !== prevContentRef.current) {
-          displayedRef.current = prevContentRef.current
-          setDisplayedContent(displayedRef.current)
-        }
-        rafRef.current = null
-        return
+      if (streamDoneRef.current && displayedRef.current !== prevContentRef.current) {
+        displayedRef.current = prevContentRef.current
+        setDisplayedContent(displayedRef.current)
       }
-      // 流未结束但队列空 → 等下一帧
-      rafRef.current = requestAnimationFrame(renderLoop)
+      rafRef.current = null
       return
     }
 
@@ -185,7 +181,7 @@ export function useSmoothStream({
         rafRef.current = null
       }
     }
-  }, [isStreaming, renderLoop])
+  }, [content, isStreaming, renderLoop])
 
   return { displayedContent }
 }

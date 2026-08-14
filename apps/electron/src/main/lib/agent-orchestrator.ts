@@ -20,7 +20,7 @@ import { join, dirname } from 'node:path'
 import { accessSync, constants, existsSync, mkdirSync, realpathSync } from 'node:fs'
 import type { ToolDefinition } from '@earendil-works/pi-coding-agent'
 import { app } from 'electron'
-import type { AgentSendInput, AgentMessage, AgentGenerateTitleInput, AgentProviderAdapter, AgentSessionMeta, CodexOAuthCredentials, XaiOAuthCredentials, TypedError, SDKMessage, SDKAssistantMessage, AgentStreamPayload, RewindSessionResult, SkillActivation } from '@proma/shared'
+import type { AgentSendInput, AgentMessage, AgentGenerateTitleInput, PiRunSourceEvent, AgentSessionMeta, CodexOAuthCredentials, XaiOAuthCredentials, TypedError, SDKMessage, SDKAssistantMessage, AgentStreamPayload, RewindSessionResult, SkillActivation } from '@proma/shared'
 import {
   PROMA_DEFAULT_PERMISSION_MODE,
   PROMA_PERMISSION_MODE_CONFIG,
@@ -37,9 +37,9 @@ import {
   mergeSkillActivations,
 } from '@proma/shared'
 import type { PromaPermissionMode, AskUserRequest, ExitPlanModeRequest, SDKSystemMessage } from '@proma/shared'
-import type { PiAgentQueryOptions } from './adapters/pi-agent-adapter'
+import type { PiAgentAdapter, PiAgentQueryOptions } from './adapters/pi-agent-adapter'
 import { getMainRepoRoot } from './git-diff-service'
-import { getPiAssistantErrorDetails, hasPiAssistantTextContent, stripPiAssistantError } from './adapters/pi-message-adapter'
+import { getPiAssistantErrorDetails, hasPiAssistantTextContent, stripPiAssistantError } from './adapters/pi-transcript-projection'
 import { friendlyErrorMessage, isPromptTooLongError, isThinkingSignatureError, mapAgentErrorToTypedError } from './agent-error-utils'
 import { getActiveRunRejectionMessage, shouldPersistInitialUserMessage } from './agent-send-message-policy'
 import { withAgentMessageChannelIdentity } from './agent-message-channel-identity'
@@ -94,7 +94,7 @@ export interface SessionCallbacks {
   /** 发送标题更新 */
   onTitleUpdated: (title: string) => void
   /** 用户消息已持久化，外部入口可据此通知前端切到实时会话 */
-  onRunStarted?: (opts: { startedAt: number }) => void
+  onRunStarted?: (opts: { runId: string; startedAt: number; userMessageUuid?: string }) => void
 }
 
 type RecoverableAgentQueryOptions = {
@@ -115,7 +115,7 @@ function isMissingActiveQueueChannelError(error: unknown): boolean {
   return errorMessageOf(error).includes('无活跃消息通道可注入队列消息')
 }
 
-function isPartialSDKMessage(message: SDKMessage): boolean {
+function isLegacyPartialSnapshot(message: SDKMessage): boolean {
   return (message as Record<string, unknown>)._partial === true
 }
 
@@ -213,7 +213,7 @@ function resolveLocalProjectRootForRewind(projectRootPath: string): string {
 // ===== AgentOrchestrator =====
 
 export class AgentOrchestrator {
-  private adapter: AgentProviderAdapter
+  private adapter: PiAgentAdapter
   private eventBus: AgentEventBus
   private activeSessions = new Map<string, number>()
   private nextRunGeneration = 0
@@ -229,7 +229,7 @@ export class AgentOrchestrator {
   /** 运行中会话的当前权限模式（支持运行时动态切换） */
   private sessionPermissionModes = new Map<string, PromaPermissionMode>()
 
-  constructor(adapter: AgentProviderAdapter, eventBus: AgentEventBus) {
+  constructor(adapter: PiAgentAdapter, eventBus: AgentEventBus) {
     this.adapter = adapter
     this.eventBus = eventBus
   }
@@ -501,7 +501,7 @@ export class AgentOrchestrator {
       (m) => m.type === 'assistant' || m.type === 'user' || m.type === 'result'
         || (m.type === 'system' && isPersistableSDKSystemMessage(m as SDKSystemMessage))
     ).filter((m) => {
-      if (isPartialSDKMessage(m)) return false
+      if (isLegacyPartialSnapshot(m)) return false
       if (m.type === 'system') {
         const sysMsg = m as SDKSystemMessage
         if (hasCompactBoundary && sysMsg.subtype === 'status' && sysMsg.compact_result === 'success') {
@@ -640,6 +640,7 @@ export class AgentOrchestrator {
   ): Promise<void> {
     const { sessionId, userMessage, rawUserMessage, channelId, modelId, workspaceId: requestedWorkspaceId, additionalDirectories, permissionModeOverride, mentionedSkills, mentionedMcpServers, mentionedSessionIds, mentionedTodoIds, mentionedCalendarEventIds, automationContext, retryOfErrorUuid } = input
     const streamStartedAt = input.startedAt ?? Date.now()
+    const runId = input.runId ?? randomUUID()
     let userMessagePersisted = false
     let initialUserMessageUuid: string | undefined
     let sessionMeta = getAgentSessionMeta(sessionId)
@@ -840,7 +841,11 @@ export class AgentOrchestrator {
     // finally 块会通过 generation 匹配来安全清理，不影响正常流程
     const runGeneration = ++this.nextRunGeneration
     this.activeSessions.set(sessionId, runGeneration)
-    callbacks.onRunStarted?.({ startedAt: streamStartedAt })
+    callbacks.onRunStarted?.({
+      runId,
+      startedAt: streamStartedAt,
+      ...(initialUserMessageUuid && { userMessageUuid: initialUserMessageUuid }),
+    })
 
     const releaseActiveRun = (): void => {
       // 在发送 STREAM_COMPLETE 前释放 active slot，避免渲染进程已进入空闲态、
@@ -1438,6 +1443,7 @@ export class AgentOrchestrator {
       const piCustomTools = [...piBuiltinTools, ...piMcpTools, ...(extensions.piCustomTools ?? [])]
       const queryOptions: PiAgentQueryOptions = {
         sessionId,
+        runId,
         prompt: finalPrompt,
         // 旧持久化模型 ID 可能带 `[1m]` 上下文后缀；Pi runtime 不支持该变体：
         // 智谱等端点不识别 glm-5.2[1m] 这类后缀，会返回 1211「模型不存在」。
@@ -1534,8 +1540,8 @@ export class AgentOrchestrator {
           const queryIterable = this.adapter.query(queryOptions)
           const queryIterator = queryIterable[Symbol.asyncIterator]()
 
-          // 手动事件循环：Promise.race（SDKMessage vs result drain timeout）
-          let pendingNext: Promise<IteratorResult<SDKMessage>> | null = null
+          // 手动事件循环：Promise.race（Pi runtime event vs result drain timeout）
+          let pendingNext: Promise<IteratorResult<PiRunSourceEvent>> | null = null
           // 捕获 result.subtype 以传递给前端（用于区分 success/error_max_turns/error_max_budget_usd）
           let capturedResultSubtype: string | undefined
           // 捕获 result.errors[] 错误详情：SDK 在 error_during_execution 等场景下会把真实错误原因
@@ -1555,7 +1561,7 @@ export class AgentOrchestrator {
               pendingNext = queryIterator.next()
             }
 
-            const racePromises: Array<Promise<{ kind: string; result: IteratorResult<SDKMessage> | null }>> = [
+            const racePromises: Array<Promise<{ kind: string; result: IteratorResult<PiRunSourceEvent> | null }>> = [
               pendingNext.then((r) => ({ kind: 'event' as const, result: r })),
             ]
             if (drainTimeoutPromise) {
@@ -1577,8 +1583,12 @@ export class AgentOrchestrator {
             if (!iterResult || iterResult.done) break
 
             pendingNext = null
-            let msg = iterResult.value
-            const isPartialMessage = isPartialSDKMessage(msg)
+            const providerEvent = iterResult.value
+            if (providerEvent.kind === 'assistant_message_delta') {
+              this.eventBus.emit(sessionId, providerEvent)
+              continue
+            }
+            let msg = providerEvent.message
             if (msg.type === 'result') {
               const skillActivations = mergeSkillActivations(
                 pendingSkillActivations,
@@ -1599,9 +1609,7 @@ export class AgentOrchestrator {
             }
             // assistant partial 帧也需要渠道身份：它们会立即进入实时 UI，但不会被持久化。
             msg = withAgentMessageChannelIdentity(msg, channelId)
-            // isVisibleRunMessage 已抽到独立模块，不含 partial 判断；
-            // pi runtime 的流式 partial 消息不应计入可见消息数，故在此显式排除。
-            if (!isPartialMessage && isVisibleRunMessage(msg)) {
+            if (isVisibleRunMessage(msg)) {
               visibleRunMessageCount += 1
             }
 
@@ -1620,7 +1628,7 @@ export class AgentOrchestrator {
             }
 
             // 检测 assistant 消息中的 SDK 错误
-            if (msg.type === 'assistant' && !isPartialMessage) {
+            if (msg.type === 'assistant') {
               const assistantMsg = msg as SDKAssistantMessage
               if (assistantMsg.error) {
                 // Pi keeps generated text and the transport failure in separate fields. Claude's
@@ -1741,7 +1749,7 @@ export class AgentOrchestrator {
             // - 对 system 消息，仅累积需要长期可见的状态（压缩 / 权限拒绝）
             if (msg.type === 'assistant' || msg.type === 'user' || msg.type === 'result') {
               const msgRecord = msg as Record<string, unknown>
-              if (!msgRecord.isReplay && !isPartialMessage) {
+              if (!msgRecord.isReplay) {
                 if (msg.type === 'user') {
                   // 仅累积包含 tool_result 的 user 消息（跳过 SDK 重新发出的初始用户消息）
                   const content = (msg as { message?: { content?: Array<{ type: string }> } }).message?.content

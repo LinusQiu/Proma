@@ -42,7 +42,6 @@ describe('外部 Agent 运行激活', () => {
     ]
     const currentStreamState = {
       running: true,
-      content: '已有输出',
       toolActivities: [{
         toolUseId: 'tool-1',
         toolName: 'Bash',
@@ -63,7 +62,6 @@ describe('外部 Agent 运行激活', () => {
     expect(result.tabs).toBe(tabs)
     expect(result.activeTabId).toBe(session.id)
     expect(result.streamState.toolActivities).toBe(currentStreamState.toolActivities)
-    expect(result.streamState.content).toBe('已有输出')
     expect(result.streamState.startedAt).toBe(200)
   })
 
@@ -104,7 +102,6 @@ describe('外部 Agent 运行激活', () => {
   test('Given the same run has already completed When a delayed start event arrives Then keep it terminal', () => {
     expect(shouldActivateExternalAgentRun({
       running: false,
-      content: 'completed',
       toolActivities: [],
       startedAt: 500,
     }, 500)).toBeFalse()
@@ -113,7 +110,6 @@ describe('外部 Agent 运行激活', () => {
   test('Given a newer run is active When an older start event arrives Then ignore the old event', () => {
     expect(shouldActivateExternalAgentRun({
       running: true,
-      content: 'newer run',
       toolActivities: [],
       startedAt: 700,
     }, 600)).toBeFalse()
@@ -128,7 +124,6 @@ describe('外部 Agent 运行激活', () => {
     })
 
     expect(result.streamState.running).toBe(true)
-    expect(result.streamState.content).toBe('')
     expect(result.streamState.toolActivities).toEqual([])
     expect(result.streamState.model).toBeUndefined()
     expect(result.streamState.startedAt).toBe(400)

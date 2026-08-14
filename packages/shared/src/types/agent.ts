@@ -550,9 +550,9 @@ export interface AgentToolResultImage {
 export type AgentPlanModeChangeSource = 'initial' | 'tool' | 'permission'
 
 /**
- * Agent 事件流类型
+ * 旧 AgentMessage JSONL 的扁平事件格式。
  *
- * 从 SDK 消息转换而来的扁平事件流，用于驱动 UI 渲染。
+ * 仅用于读取历史记录；Pi-native live runtime 不再生成或归约此协议。
  */
 export type AgentEvent =
   // 文本流式输出
@@ -631,12 +631,12 @@ export type PromaEvent =
   | { type: 'context_window'; contextWindow: number }
   | { type: 'permission_mode_changed'; mode: PromaPermissionMode }
   | { type: 'title_updated'; title: string }
-  | { type: 'external_run_started'; source: AgentExternalRunSource; sessionId: string; title?: string; workspaceId?: string; modelId?: string; channelId?: string; startedAt: number; session?: AgentSessionMeta }
-  /** 普通桌面会话已开始执行；startedAt 用于区分同一会话的连续运行。 */
-  | { type: 'run_started'; startedAt: number }
-  | { type: 'run_resumed'; sessionId: string }
-  /** 用户主动停止当前执行；startedAt 防止旧运行的终态覆盖新一轮执行。 */
-  | { type: 'run_stopped'; startedAt?: number }
+  | { type: 'external_run_started'; source: AgentExternalRunSource; sessionId: string; runId: string; title?: string; workspaceId?: string; modelId?: string; channelId?: string; startedAt: number; userMessage?: string; userMessageUuid?: string; session?: AgentSessionMeta }
+  /** 普通桌面会话已开始执行；runId 是竞态隔离的唯一身份。 */
+  | { type: 'run_started'; runId: string; startedAt: number }
+  | { type: 'run_resumed'; sessionId: string; runId?: string }
+  /** 用户主动停止当前执行；runId 防止旧运行的终态覆盖新一轮执行。 */
+  | { type: 'run_stopped'; runId?: string; startedAt?: number }
   // 协作子会话阻塞事件上浮
   | { type: 'delegation_blocked'; delegationId: string; blockedEvent: unknown }
   // 自动任务会话被用户接管（毕业）
@@ -645,10 +645,52 @@ export type PromaEvent =
 /** 外部入口触发 Agent 运行的来源 */
 export type AgentExternalRunSource = 'feishu' | 'dingtalk' | 'wechat' | 'bridge' | 'delegation'
 
-/** IPC 传输的统一 payload（替代 AgentEvent） */
+/** assistant partial 的增量块操作。 */
+export type AgentAssistantDeltaOperation =
+  | { type: 'append_text'; blockIndex: number; text: string }
+  | { type: 'append_thinking'; blockIndex: number; thinking: string }
+  | { type: 'append_block'; blockIndex: number; block: SDKContentBlock }
+  | { type: 'replace_block'; blockIndex: number; block: SDKContentBlock }
+  | { type: 'truncate_blocks'; length: number }
+
+/** assistant partial 中可能变化的轻量消息元数据。 */
+export interface AgentAssistantDeltaMetadata {
+  usage?: SDKAssistantMessage['message']['usage']
+  model?: string
+  stopReason?: string
+  parentToolUseId?: string | null
+  sessionId?: string
+  channelModelId?: string
+  channelId?: string
+  channelProvider?: ProviderType
+}
+
+/**
+ * main → renderer 的 canonical assistant 增量。
+ *
+ * reset 只用于首帧或结构无法安全增量表达时；正常文本流只传 append_text，
+ * 避免累计全文在 main、IPC、Jotai 和 React 之间重复复制。
+ */
+export interface AgentAssistantMessageDelta {
+  kind: 'assistant_message_delta'
+  /** 顶层 Agent run 的唯一身份；同一 run 内 retry/compaction continuation 不改变。 */
+  runId: string
+  messageId: string
+  /** 同一 run/messageId 内严格单调递增；retry reset 开始新 attempt 但不回退序号。 */
+  sequence: number
+  reset?: SDKAssistantMessage
+  operations: AgentAssistantDeltaOperation[]
+  metadata?: AgentAssistantDeltaMetadata
+}
+
+/** 主进程内部 EventBus 与 renderer IPC 的统一 payload。 */
 export type AgentStreamPayload =
   | { kind: 'sdk_message'; message: SDKMessage }
   | { kind: 'proma_event'; event: PromaEvent }
+  | AgentAssistantMessageDelta
+
+/** @deprecated AgentStreamPayload 已直接包含 renderer canonical delta。 */
+export type AgentRendererStreamPayload = AgentStreamPayload
 
 // ===== Agent 会话管理 =====
 
@@ -1149,8 +1191,10 @@ export interface AgentSendInput {
   mentionedTodoIds?: string[]
   /** 用户通过日程引用 mention 指定的日程 ID 列表 */
   mentionedCalendarEventIds?: string[]
-  /** 渲染进程生成的流式开始时间戳，主进程原样回传到 STREAM_COMPLETE，确保竞态保护比较的是同一个值 */
+  /** 渲染进程生成的流式开始时间戳，仅用于展示和耗时计算。 */
   startedAt?: number
+  /** 主进程为每次 send 分配的 opaque run identity；外部入口可预先指定。 */
+  runId?: string
   /** 用户点击错误消息的重试时，指向本轮开始前应删除的错误 UUID。 */
   retryOfErrorUuid?: string
   /** 触发来源：用户手动、定时任务、父 Agent 委派（用于 UI 区分标记） */
@@ -1272,21 +1316,37 @@ export interface StopTaskInput {
 /**
  * Agent 流式事件（主进程 → 渲染进程推送）
  */
-export interface AgentStreamEvent {
+export interface AgentRunEvent {
   /** 会话 ID */
   sessionId: string
-  /** 事件数据（新格式） */
-  payload: AgentStreamPayload
-  /** @deprecated 兼容旧格式，Phase 2 后移除 */
-  event?: AgentEvent
+  /** 事件所属 run；旧的 out-of-run 产品事件可缺省。 */
+  runId?: string
+  /** run 内 EventBus 投递序号；旧的 out-of-run 产品事件可缺省。 */
+  sequence?: number
+  occurredAt?: number
+  /** 单一 canonical payload。 */
+  payload: AgentRendererStreamPayload
 }
+
+/** Electron IPC 保留旧导出名；实际协议为 AgentRunEvent。 */
+export type AgentStreamEvent = AgentRunEvent
 
 /**
  * Agent 流式完成事件载荷（主进程 → 渲染进程）。
  * 消息已在主进程落盘；renderer 收到完成事件后自行按页刷新，避免传输整段历史。
  */
+export interface AgentStreamErrorPayload {
+  sessionId: string
+  runId?: string
+  /** run_started 前的合法 preflight 错误用它匹配 renderer 乐观状态。 */
+  startedAt?: number
+  error: string
+}
+
 export interface AgentStreamCompletePayload {
   sessionId: string
+  /** 精确匹配本轮运行，迟到终态不得结束其他 run。 */
+  runId?: string
   /** 触发来源：用于区分顶层会话与父 Agent 委派的子会话完成 */
   triggeredBy?: AgentSendInput['triggeredBy']
   /** 是否由用户手动中止 */

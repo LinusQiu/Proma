@@ -1039,7 +1039,6 @@ export function AgentView({ sessionId }: { sessionId: string }): React.ReactElem
       const existing = prev.get(sessionId)
       map.set(sessionId, {
         running: true,
-        content: '',
         toolActivities: [],
         model: agentModelId || undefined,
         channelId,
@@ -1205,8 +1204,7 @@ export function AgentView({ sessionId }: { sessionId: string }): React.ReactElem
               map.set(sessionId, {
                 running: false,
                 backgroundWaiting: state.backgroundWaiting,
-                content: '',
-                toolActivities: [],
+                      toolActivities: [],
                 inputTokens: state.inputTokens,
                 outputTokens: state.outputTokens,
                 cacheReadTokens: state.cacheReadTokens,
@@ -1222,8 +1220,7 @@ export function AgentView({ sessionId }: { sessionId: string }): React.ReactElem
               map.set(sessionId, {
                 running: false,
                 backgroundWaiting: state.backgroundWaiting,
-                content: '',
-                toolActivities: [],
+                      toolActivities: [],
                 contextCompaction: state.contextCompaction,
               })
             } else {
@@ -1332,7 +1329,6 @@ export function AgentView({ sessionId }: { sessionId: string }): React.ReactElem
         const existing = prev.get(sessionId)
         map.set(sessionId, {
           running: true,
-          content: '',
           toolActivities: [],
           model: snapshot.modelId,
           channelId: snapshot.channelId,
@@ -2292,7 +2288,6 @@ export function AgentView({ sessionId }: { sessionId: string }): React.ReactElem
       const existing = prev.get(sessionId)
       map.set(sessionId, {
         running: true,
-        content: '',
         toolActivities: [],
         model: agentModelId || undefined,
         channelId: agentChannelId,
@@ -2402,7 +2397,6 @@ export function AgentView({ sessionId }: { sessionId: string }): React.ReactElem
       const map = new Map(prev)
       const current = prev.get(sessionId) ?? {
         running: true,
-        content: '',
         toolActivities: [],
         model: agentModelId || undefined,
         channelId: agentChannelId,
@@ -2528,7 +2522,6 @@ export function AgentView({ sessionId }: { sessionId: string }): React.ReactElem
       const existing = prev.get(sessionId)
       map.set(sessionId, {
         running: true,
-        content: '',
         toolActivities: [],
         model: agentModelId || undefined,
         channelId: agentChannelId,
@@ -2575,7 +2568,6 @@ export function AgentView({ sessionId }: { sessionId: string }): React.ReactElem
         const map = new Map(prev)
         map.set(meta.id, {
           running: true,
-          content: '',
           toolActivities: [],
           model: agentModelId || undefined,
           channelId: agentChannelId,
