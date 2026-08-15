@@ -132,6 +132,7 @@ import {
   queuedTextToParagraphHtml,
   removeQueuedMessage,
   restoreQueuedMessageToFront,
+  upsertAgentLiveMessageByUuid,
 } from '@/lib/agent-message-queue'
 import type { AgentQueuedAttachment, AgentQueuedMessage, QueueDropPlacement } from '@/lib/agent-message-queue'
 
@@ -967,7 +968,7 @@ export function AgentView({ sessionId }: { sessionId: string }): React.ReactElem
     store.set(liveMessagesMapAtom, (prev) => {
       const map = new Map(prev)
       const current = map.get(sessionId) ?? []
-      map.set(sessionId, [...current, message])
+      map.set(sessionId, upsertAgentLiveMessageByUuid(current, message))
       return map
     })
   }, [sessionId, store])
