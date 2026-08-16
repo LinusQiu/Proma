@@ -29,7 +29,7 @@ export interface ToolEntry {
 }
 
 export type Block =
-  | { kind: 'text'; content: string; streaming: boolean }
+  | { kind: 'text'; content: string; streaming: boolean; assistantUuid?: string; contentIndex?: number }
   | { kind: 'tool'; tool: ToolEntry }
 
 export type FooterStatus = 'thinking' | 'tool_running' | 'streaming' | null
@@ -82,10 +82,16 @@ function closeStreamingText(blocks: Block[]): Block[] {
   )
 }
 
-function appendText(state: RunState, delta: string): RunState {
+function appendText(state: RunState, delta: string, assistantUuid?: string, contentIndex?: number): RunState {
   const last = state.blocks[state.blocks.length - 1]
-  if (last && last.kind === 'text' && last.streaming) {
-    const next: Block = { ...last, content: last.content + delta }
+  if (
+    last
+    && last.kind === 'text'
+    && last.streaming
+    && (!assistantUuid || last.assistantUuid === assistantUuid)
+    && (contentIndex == null || last.contentIndex === contentIndex)
+  ) {
+    const next: Block = { ...last, content: last.content + delta, assistantUuid, contentIndex }
     return {
       ...state,
       blocks: [...state.blocks.slice(0, -1), next],
@@ -95,10 +101,39 @@ function appendText(state: RunState, delta: string): RunState {
   }
   return {
     ...state,
-    blocks: [...state.blocks, { kind: 'text', content: delta, streaming: true }],
+    blocks: [...state.blocks, { kind: 'text', content: delta, streaming: true, assistantUuid, contentIndex }],
     reasoning: { ...state.reasoning, active: false },
     footer: 'streaming',
   }
+}
+
+function resetActiveAssistantText(state: RunState, assistantUuid: string): RunState {
+  const blocks = state.blocks.filter((block) => !(block.kind === 'text' && block.assistantUuid === assistantUuid))
+  return {
+    ...state,
+    blocks,
+    reasoning: { content: '', active: false },
+  }
+}
+
+function setAssistantTextBlock(
+  state: RunState,
+  assistantUuid: string,
+  contentIndex: number,
+  content: string,
+  streaming: boolean,
+): RunState {
+  const index = state.blocks.findIndex((block) =>
+    block.kind === 'text'
+    && block.assistantUuid === assistantUuid
+    && block.contentIndex === contentIndex,
+  )
+  if (index < 0) return appendText({ ...state, blocks: closeStreamingText(state.blocks) }, content, assistantUuid, contentIndex)
+  const block = state.blocks[index]
+  if (!block || block.kind !== 'text') return state
+  const blocks = [...state.blocks]
+  blocks[index] = { ...block, content, streaming }
+  return { ...state, blocks, footer: streaming ? 'streaming' : state.footer }
 }
 
 function appendThinking(state: RunState, delta: string): RunState {
@@ -172,24 +207,42 @@ function stringifyToolResult(content: unknown): string {
 
 export function reduce(state: RunState, payload: AgentStreamPayload): RunState {
   if (payload.kind === 'sdk_delta') {
-    const next = payload.delta.deltas.reduce((next, delta) => {
+    const { uuid, deltas } = payload.delta
+    const next = deltas.reduce<RunState>((current, delta) => {
       switch (delta.type) {
+        case 'start':
+          return resetActiveAssistantText(current, uuid)
+        case 'text_start': {
+          const reset = {
+            ...current,
+            blocks: current.blocks.filter((block) => !(block.kind === 'text' && block.assistantUuid === uuid && block.streaming)),
+          }
+          return { ...reset, footer: 'streaming' as const }
+        }
         case 'text_delta':
-          return delta.delta ? appendText(next, delta.delta) : next
+          return delta.delta ? appendText(current, delta.delta, uuid, delta.contentIndex) : current
+        case 'text_end':
+          return setAssistantTextBlock(current, uuid, delta.contentIndex, delta.content, false)
+        case 'thinking_start':
+          return { ...current, reasoning: { content: '', active: true }, footer: 'thinking' as const }
         case 'thinking_delta':
-          return delta.delta ? appendThinking(next, delta.delta) : next
+          return delta.delta
+            ? { ...current, reasoning: { content: current.reasoning.content + delta.delta, active: true }, footer: 'thinking' as const }
+            : current
+        case 'thinking_end':
+          return { ...current, reasoning: { content: delta.content, active: false } }
         case 'toolcall_start':
         case 'toolcall_end': {
           const toolCall = delta.toolCall
-          return toolCall ? startTool(next, toolCall.id, toolCall.name, toolCall.arguments ?? {}) : next
+          return toolCall ? startTool(current, toolCall.id, toolCall.name, toolCall.arguments ?? {}) : current
         }
         default:
-          return next
+          return current
       }
     }, state)
     return {
       ...next,
-      deltaAssistantUuids: { ...next.deltaAssistantUuids, [payload.delta.uuid]: true },
+      deltaAssistantUuids: { ...next.deltaAssistantUuids, [uuid]: true },
     }
   }
 
@@ -221,9 +274,12 @@ export function reduce(state: RunState, payload: AgentStreamPayload): RunState {
 
       for (const [index, block] of (am.message?.content ?? []).entries()) {
         if (block.type === 'text') {
-          if (consumedByDelta) continue
           const text = (block as { text?: unknown }).text
           if (typeof text === 'string') {
+            if (consumedByDelta && assistantId) {
+              next = setAssistantTextBlock(next, assistantId, index, text, false)
+              continue
+            }
             const previous = previousSnapshot?.blocks[index]
             const delta = useCumulativeSnapshot && previous?.type === 'text'
               ? cumulativeDelta(text, previous.content)
@@ -232,9 +288,12 @@ export function reduce(state: RunState, payload: AgentStreamPayload): RunState {
             if (isPartial) partialBlocks[index] = { type: 'text', content: text }
           }
         } else if (block.type === 'thinking') {
-          if (consumedByDelta) continue
           const thinking = (block as { thinking?: unknown }).thinking
           if (typeof thinking === 'string') {
+            if (consumedByDelta && assistantId) {
+              next = { ...next, reasoning: { content: thinking, active: false } }
+              continue
+            }
             const previous = previousSnapshot?.blocks[index]
             const delta = useCumulativeSnapshot && previous?.type === 'thinking'
               ? cumulativeDelta(thinking, previous.content)
