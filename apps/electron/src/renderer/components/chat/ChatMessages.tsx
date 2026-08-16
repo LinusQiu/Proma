@@ -26,6 +26,7 @@ import {
   MessageContent,
   MessageLoading,
   MessageResponse,
+  MarkdownStreamingContext,
   StreamingIndicator,
 } from '@/components/ai-elements/message'
 import {
@@ -343,6 +344,7 @@ export function ChatMessages({
         streaming={streaming}
         streamingContent={smoothContent}
         streamingReasoning={smoothReasoning}
+        markdownStreaming={streaming || smoothContent !== streamingContent}
         startedAt={startedAt}
         contextDividers={contextDividers}
         onDeleteDivider={onDeleteDivider}
@@ -429,7 +431,9 @@ export function ChatMessages({
                   {/* 流式内容（经过平滑处理） */}
                   {smoothContent ? (
                     <>
-                      <MessageResponse>{smoothContent}</MessageResponse>
+                      <MarkdownStreamingContext.Provider value={streaming || smoothContent !== streamingContent}>
+                        <MessageResponse>{smoothContent}</MessageResponse>
+                      </MarkdownStreamingContext.Provider>
                       {streaming && <StreamingIndicator />}
                     </>
                   ) : (

@@ -40,7 +40,7 @@ import {
 import { LoadingIndicator } from '@/components/ui/loading-indicator'
 import { CodeBlock, MermaidBlock } from '@proma/ui'
 import { detectLanguage } from '@proma/core'
-import { FilePathChip, isAbsoluteFilePath, isImageFilePath, isRelativeFilePath } from './file-path-chip'
+import { FilePathChip, isAbsoluteFilePath, isImageFilePath, isRelativeFilePath, shouldRenderFilePathChip } from './file-path-chip'
 import { buildAgentHistoryQuoteLabel, parseAgentHistoryQuoteMention } from '@/lib/quoted-selection'
 import { useAgentBrowserLink } from '@/components/browser/AgentBrowserLinkProvider'
 import type { HTMLAttributes, ComponentProps, ReactNode } from 'react'
@@ -543,6 +543,15 @@ const MarkdownLink = React.memo(function MarkdownLink({
   ...linkProps
 }: React.AnchorHTMLAttributes<HTMLAnchorElement>): React.ReactElement {
   const agentBrowserLink = useAgentBrowserLink()
+  const isStreamingMarkdown = React.useContext(MarkdownStreamingContext)
+  // 流式期间保持原始链接文本，避免闭合链接后立刻缩成更短的文件 chip。
+  if (isStreamingMarkdown && href) {
+    const mentionMatch = MENTION_URL_RE.exec(href)
+    const filePath = safeDecode(href)
+    if (mentionMatch || isAbsoluteFilePath(filePath)) {
+      return <span>{linkChildren}</span>
+    }
+  }
   // mention:// 协议 → 渲染为 MentionChip
   if (href) {
     const mentionMatch = MENTION_URL_RE.exec(href)
@@ -645,6 +654,7 @@ const MarkdownInlineCode = React.memo(function MarkdownInlineCode({
 }: React.HTMLAttributes<HTMLElement> & { basePath?: string; basePaths?: string[] }): React.ReactElement {
   // 兜底：从 context 读附加 basePaths（避免穿透 SDKMessageRenderer / ContentBlock 等中间层）
   const ctxBasePaths = React.useContext(BasePathsContext)
+  const isStreamingMarkdown = React.useContext(MarkdownStreamingContext)
   // 本轮「文件名 → 绝对路径」映射：命中时把内联裸文件名补全为绝对路径
   const turnFileMap = React.useContext(TurnFileMapContext)
   if (codeClassName) {
@@ -654,34 +664,39 @@ const MarkdownInlineCode = React.memo(function MarkdownInlineCode({
   const text = typeof codeChildren === 'string' ? codeChildren : ''
 
   if (text) {
-    // 合并 basePath（主 cwd）+ basePaths（props 或 context 提供的附加目录）作为候选
-    const merged: string[] = []
-    if (basePath) merged.push(basePath)
-    const allExtra = basePaths || ctxBasePaths
-    if (allExtra) {
-      for (const p of allExtra) {
-        if (p && !merged.includes(p)) merged.push(p)
-      }
-    }
-    if (isAbsoluteFilePath(text)) {
-      return <FilePathChip filePath={text.trim()} basePaths={merged.length > 0 ? merged : undefined} />
-    }
-    if (merged.length > 0 && isRelativeFilePath(text)) {
-      // 命中本轮实际触及文件的映射时，用绝对路径替换裸文件名（保留行号后缀），
-      // 使内联引用与 footer chip 走同一条可靠解析；未命中则维持原样降级。
-      const trimmed = text.trim()
-      if (turnFileMap && turnFileMap.size > 0) {
-        const lineColMatch = trimmed.match(/^(.+?)(:\d+(?::\d+)?)$/)
-        const hasLineCol = !!lineColMatch && !lineColMatch[1]!.endsWith(':')
-        const pathPart = hasLineCol ? lineColMatch![1]! : trimmed
-        const suffix = hasLineCol ? lineColMatch![2]! : ''
-        const baseName = pathPart.split(/[\\/]/).pop() || pathPart
-        const abs = turnFileMap.get(baseName)
-        if (abs) {
-          return <FilePathChip filePath={abs + suffix} basePaths={merged} />
+    // 流式期间不把 Markdown inline code 转换成文件 chip，避免同一段文本在
+    // 反引号闭合后由完整路径缩成文件名，造成视觉上的内容回退。
+    const hasBasePaths = Boolean(basePath || (basePaths || ctxBasePaths)?.some(Boolean))
+    if (shouldRenderFilePathChip(text, isStreamingMarkdown, hasBasePaths)) {
+      // 合并 basePath（主 cwd）+ basePaths（props 或 context 提供的附加目录）作为候选
+      const merged: string[] = []
+      if (basePath) merged.push(basePath)
+      const allExtra = basePaths || ctxBasePaths
+      if (allExtra) {
+        for (const p of allExtra) {
+          if (p && !merged.includes(p)) merged.push(p)
         }
       }
-      return <FilePathChip filePath={trimmed} basePaths={merged} />
+      if (isAbsoluteFilePath(text)) {
+        return <FilePathChip filePath={text.trim()} basePaths={merged.length > 0 ? merged : undefined} />
+      }
+      if (merged.length > 0 && isRelativeFilePath(text)) {
+        // 命中本轮实际触及文件的映射时，用绝对路径替换裸文件名（保留行号后缀），
+        // 使内联引用与 footer chip 走同一条可靠解析；未命中则维持原样降级。
+        const trimmed = text.trim()
+        if (turnFileMap && turnFileMap.size > 0) {
+          const lineColMatch = trimmed.match(/^(.+?)(:\d+(?::\d+)?)$/)
+          const hasLineCol = !!lineColMatch && !lineColMatch[1]!.endsWith(':')
+          const pathPart = hasLineCol ? lineColMatch![1]! : trimmed
+          const suffix = hasLineCol ? lineColMatch![2]! : ''
+          const baseName = pathPart.split(/[\\/]/).pop() || pathPart
+          const abs = turnFileMap.get(baseName)
+          if (abs) {
+            return <FilePathChip filePath={abs + suffix} basePaths={merged} />
+          }
+        }
+        return <FilePathChip filePath={trimmed} basePaths={merged} />
+      }
     }
   }
 

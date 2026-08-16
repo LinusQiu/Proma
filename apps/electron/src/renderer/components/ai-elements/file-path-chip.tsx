@@ -265,6 +265,15 @@ export function isAbsoluteFilePath(text: string): boolean {
 }
 
 /**
+ * 判断 Markdown inline code 当前是否可以转换为文件 chip。
+ * 流式期间必须保留原始代码文本，等语法和内容稳定后再缩成 chip，避免视觉回退。
+ */
+export function shouldRenderFilePathChip(text: string, isStreaming: boolean, hasBasePaths: boolean): boolean {
+  if (isStreaming) return false
+  return isAbsoluteFilePath(text) || (hasBasePaths && isRelativeFilePath(text))
+}
+
+/**
  * 检测文本是否为相对文件路径（需要 basePath 才有意义）
  *
  * 匹配规则：

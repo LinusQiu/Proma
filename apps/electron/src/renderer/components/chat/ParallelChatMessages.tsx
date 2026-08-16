@@ -21,6 +21,7 @@ import {
   MessageContent,
   MessageLoading,
   MessageResponse,
+  MarkdownStreamingContext,
   StreamingIndicator,
 } from '@/components/ai-elements/message'
 import {
@@ -56,6 +57,8 @@ interface ParallelChatMessagesProps {
   onSubmitInlineEdit?: (message: ChatMessage, payload: InlineEditSubmitPayload) => Promise<void>
   onCancelInlineEdit?: () => void
   inlineEditingMessageId?: string | null
+  /** Markdown 解析是否仍处于流式排空阶段（与 UI streaming 状态分离） */
+  markdownStreaming?: boolean
   /** 是否正在加载更多历史消息 */
   loadingMore?: boolean
 }
@@ -139,6 +142,8 @@ interface MessageColumnProps {
   streaming?: boolean
   streamingContent?: string
   streamingReasoning?: string
+  /** Markdown 解析是否仍处于流式排空阶段 */
+  markdownStreaming?: boolean
   startedAt?: number
 }
 
@@ -157,6 +162,7 @@ function MessageColumn({
   streamingContent = '',
   streamingReasoning = '',
   startedAt,
+  markdownStreaming = streaming,
 }: MessageColumnProps): React.ReactElement {
   const streamingModel = useAtomValue(streamingModelAtom)
   const channels = useAtomValue(channelsAtom)
@@ -224,7 +230,9 @@ function MessageColumn({
               )}
               {streamingContent ? (
                 <>
-                  <MessageResponse>{streamingContent}</MessageResponse>
+                  <MarkdownStreamingContext.Provider value={markdownStreaming}>
+                    <MessageResponse>{streamingContent}</MessageResponse>
+                  </MarkdownStreamingContext.Provider>
                   {streaming && <StreamingIndicator />}
                 </>
               ) : (
@@ -254,6 +262,7 @@ export function ParallelChatMessages({
   onCancelInlineEdit,
   inlineEditingMessageId,
   loadingMore = false,
+  markdownStreaming = streaming,
 }: ParallelChatMessagesProps): React.ReactElement {
   // 分段消息
   const segments = useMemo(
@@ -326,6 +335,7 @@ export function ParallelChatMessages({
               streamingContent={streamingContent}
               streamingReasoning={streamingReasoning}
               startedAt={startedAt}
+              markdownStreaming={markdownStreaming}
             />
           </div>
         </div>
@@ -397,6 +407,7 @@ export function ParallelChatMessages({
                   streamingContent={index === segments.length - 1 ? streamingContent : ''}
                   streamingReasoning={index === segments.length - 1 ? streamingReasoning : ''}
                   startedAt={index === segments.length - 1 ? startedAt : undefined}
+                  markdownStreaming={index === segments.length - 1 ? markdownStreaming : false}
                 />
               </div>
             </div>
