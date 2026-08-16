@@ -198,7 +198,9 @@ function setAssistantThinking(
 function resetActiveAssistantText(state: RunState, assistantUuid: string): RunState {
   const blocks = state.blocks.filter((block) => {
     const blockUuid = block.kind === 'text' ? block.assistantUuid : block.tool.assistantUuid
-    return blockUuid !== assistantUuid || block.kind === 'tool'
+    if (blockUuid !== assistantUuid) return true
+    if (block.kind === 'text') return false
+    return block.tool.status !== 'running'
   })
   if (!state.deltaAssistantThinking?.[assistantUuid]) return { ...state, blocks, reasoning: { content: '', active: false } }
   const { [assistantUuid]: _, ...deltaAssistantThinking } = state.deltaAssistantThinking
