@@ -1599,6 +1599,7 @@ export class AgentOrchestrator {
                   uuid: msg.uuid,
                   deltas: [msg.delta],
                   session_id: msg.session_id,
+                  runStartedAt: streamStartedAt,
                   _channelModelId: msg._channelModelId,
                 },
               })

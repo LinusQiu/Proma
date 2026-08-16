@@ -1119,6 +1119,11 @@ export function useGlobalAgentListeners(): void {
         // Phase 2: 直接累积 SDKMessage 到 liveMessagesMapAtom（跳过 replay 消息，避免与持久化消息重复）
         if (payload.kind === 'sdk_delta') {
           const deltaPayload = payload.delta
+          const currentRunStartedAt = store.get(agentStreamingStatesAtom).get(sessionId)?.startedAt
+          // Delta 必须携带产生它的 run 标识。迟到的旧 run Delta 不能借用当前 run，
+          // 否则会被 live-group-set 误判为新一轮消息；无标识的旧协议事件也不强行归类。
+          if (currentRunStartedAt != null && deltaPayload.runStartedAt !== currentRunStartedAt) return
+          const deltaRunStartedAt = deltaPayload.runStartedAt
           const sessionModelMap = store.get(agentSessionModelMapAtom)
           const defaultModelId = store.get(agentModelIdAtom)
           const modelId = deltaPayload._channelModelId ?? sessionModelMap.get(sessionId) ?? defaultModelId ?? undefined
@@ -1126,24 +1131,27 @@ export function useGlobalAgentListeners(): void {
           const defaultChannelId = store.get(agentChannelIdAtom)
           const channelId = sessionChannelMap.get(sessionId) ?? defaultChannelId ?? undefined
           const provider = store.get(channelsAtom).find((c) => c.id === channelId)?.provider
-          const activeRunStartedAt = store.get(agentStreamingStatesAtom).get(sessionId)?.startedAt
           store.set(liveMessagesMapAtom, (prev) => {
             const map = new Map(prev)
             const current = map.get(sessionId) ?? []
-            const existingIndex = current.findIndex((message) => (message as Record<string, unknown>).uuid === deltaPayload.uuid)
+            const existingIndex = current.findIndex((message) => {
+              const record = message as unknown as Record<string, unknown>
+              if (record.uuid !== deltaPayload.uuid) return false
+              return deltaRunStartedAt == null || record._promaLiveRunStartedAt === deltaRunStartedAt
+            })
             const existing = existingIndex >= 0 && current[existingIndex]?.type === 'assistant'
               ? current[existingIndex] as SDKAssistantMessage
               : createAssistantDeltaPreview(deltaPayload, {
                 ...(modelId ? { _channelModelId: modelId } : {}),
                 ...(provider ? { _channelProvider: provider } : {}),
-                ...(activeRunStartedAt != null ? { _promaLiveRunStartedAt: activeRunStartedAt } : {}),
+                ...(deltaRunStartedAt != null ? { _promaLiveRunStartedAt: deltaRunStartedAt } : {}),
               })
             const nextMessage = deltaPayload.deltas.reduce(applyAssistantDeltaToPreview, existing)
             // live-group-set 依赖 run 标记区分当前队列轮次；Delta 预览也必须携带它，
             // 否则 transcript 已有 assistant，但会被误判为非 live 并额外渲染 smooth fallback。
-            const markedMessage = activeRunStartedAt != null
-              && (nextMessage as unknown as Record<string, unknown>)._promaLiveRunStartedAt !== activeRunStartedAt
-              ? { ...nextMessage, _promaLiveRunStartedAt: activeRunStartedAt } as SDKAssistantMessage
+            const markedMessage = deltaRunStartedAt != null
+              && (nextMessage as unknown as Record<string, unknown>)._promaLiveRunStartedAt !== deltaRunStartedAt
+              ? { ...nextMessage, _promaLiveRunStartedAt: deltaRunStartedAt } as SDKAssistantMessage
               : nextMessage
             if (existingIndex >= 0) {
               const next = [...current]

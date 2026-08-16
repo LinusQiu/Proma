@@ -62,6 +62,7 @@ export class AgentStreamForwarder {
         existing.event.payload.kind === 'sdk_delta'
         && payload.kind === 'sdk_delta'
         && existing.event.payload.delta.uuid === payload.delta.uuid
+        && existing.event.payload.delta.runStartedAt === payload.delta.runStartedAt
       ) {
         const current = existing.event.payload.delta
         existing.event = {

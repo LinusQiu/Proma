@@ -15,6 +15,7 @@ function isPartialAssistantEvent(event: AgentStreamEvent): boolean {
 function mergePendingEvents(current: AgentStreamEvent, next: AgentStreamEvent): AgentStreamEvent {
   if (current.payload.kind !== 'sdk_delta' || next.payload.kind !== 'sdk_delta') return next
   if (current.payload.delta.uuid !== next.payload.delta.uuid) return next
+  if (current.payload.delta.runStartedAt !== next.payload.delta.runStartedAt) return next
   return {
     ...next,
     payload: {
@@ -58,7 +59,9 @@ export function createAgentStreamEventBatcher(options: AgentStreamEventBatcherOp
       const existing = pending.get(event.sessionId)
       if (
         existing?.payload.kind === 'sdk_delta'
-        && (event.payload.kind !== 'sdk_delta' || existing.payload.delta.uuid !== event.payload.delta.uuid)
+        && (event.payload.kind !== 'sdk_delta'
+          || existing.payload.delta.uuid !== event.payload.delta.uuid
+          || existing.payload.delta.runStartedAt !== event.payload.delta.runStartedAt)
       ) {
         pending.delete(event.sessionId)
         options.dispatch(existing)

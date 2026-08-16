@@ -664,6 +664,8 @@ export interface AgentAssistantDeltaPayload {
   uuid: string
   deltas: AgentAssistantDelta[]
   session_id?: string
+  /** 产生该 Delta 的 Agent run 起始时间；仅存在于运行时 payload，不写入 JSONL。 */
+  runStartedAt?: number
   _channelModelId?: string
 }
 
