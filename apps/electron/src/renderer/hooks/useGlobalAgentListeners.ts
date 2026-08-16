@@ -1126,6 +1126,7 @@ export function useGlobalAgentListeners(): void {
           const defaultChannelId = store.get(agentChannelIdAtom)
           const channelId = sessionChannelMap.get(sessionId) ?? defaultChannelId ?? undefined
           const provider = store.get(channelsAtom).find((c) => c.id === channelId)?.provider
+          const activeRunStartedAt = store.get(agentStreamingStatesAtom).get(sessionId)?.startedAt
           store.set(liveMessagesMapAtom, (prev) => {
             const map = new Map(prev)
             const current = map.get(sessionId) ?? []
@@ -1135,14 +1136,21 @@ export function useGlobalAgentListeners(): void {
               : createAssistantDeltaPreview(deltaPayload, {
                 ...(modelId ? { _channelModelId: modelId } : {}),
                 ...(provider ? { _channelProvider: provider } : {}),
+                ...(activeRunStartedAt != null ? { _promaLiveRunStartedAt: activeRunStartedAt } : {}),
               })
             const nextMessage = deltaPayload.deltas.reduce(applyAssistantDeltaToPreview, existing)
+            // live-group-set 依赖 run 标记区分当前队列轮次；Delta 预览也必须携带它，
+            // 否则 transcript 已有 assistant，但会被误判为非 live 并额外渲染 smooth fallback。
+            const markedMessage = activeRunStartedAt != null
+              && (nextMessage as unknown as Record<string, unknown>)._promaLiveRunStartedAt !== activeRunStartedAt
+              ? { ...nextMessage, _promaLiveRunStartedAt: activeRunStartedAt } as SDKAssistantMessage
+              : nextMessage
             if (existingIndex >= 0) {
               const next = [...current]
-              next[existingIndex] = nextMessage
+              next[existingIndex] = markedMessage
               map.set(sessionId, next)
             } else {
-              map.set(sessionId, [...current, nextMessage])
+              map.set(sessionId, [...current, markedMessage])
             }
             return map
           })
