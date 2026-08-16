@@ -20,7 +20,7 @@ import { join, dirname } from 'node:path'
 import { accessSync, constants, existsSync, mkdirSync, realpathSync } from 'node:fs'
 import type { ToolDefinition } from '@earendil-works/pi-coding-agent'
 import { app } from 'electron'
-import type { AgentSendInput, AgentMessage, AgentGenerateTitleInput, AgentProviderAdapter, AgentSessionMeta, CodexOAuthCredentials, XaiOAuthCredentials, TypedError, SDKMessage, SDKAssistantMessage, AgentStreamPayload, RewindSessionResult, SkillActivation } from '@proma/shared'
+import type { AgentSendInput, AgentMessage, AgentGenerateTitleInput, AgentProviderAdapter, AgentSessionMeta, CodexOAuthCredentials, XaiOAuthCredentials, TypedError, SDKMessage, SDKAssistantMessage, AgentStreamPayload, AgentAssistantDeltaPayload, RewindSessionResult, SkillActivation } from '@proma/shared'
 import {
   PROMA_DEFAULT_PERMISSION_MODE,
   PROMA_PERMISSION_MODE_CONFIG,
@@ -116,6 +116,19 @@ function isMissingActiveQueueChannelError(error: unknown): boolean {
 
 function isPartialSDKMessage(message: SDKMessage): boolean {
   return (message as Record<string, unknown>)._partial === true
+}
+
+function isAssistantDeltaSDKMessage(message: SDKMessage): message is SDKMessage & {
+  type: 'assistant_delta'
+  uuid: string
+  delta: AgentAssistantDeltaPayload['deltas'][number]
+  session_id?: string
+  _channelModelId?: string
+} {
+  const record = message as Record<string, unknown>
+  return record.type === 'assistant_delta'
+    && typeof record.uuid === 'string'
+    && !!record.delta
 }
 
 /** 默认会话标题（用于判断是否需要自动生成） */
@@ -1579,6 +1592,18 @@ export class AgentOrchestrator {
 
             pendingNext = null
             let msg = iterResult.value
+            if (isAssistantDeltaSDKMessage(msg)) {
+              this.eventBus.emit(sessionId, {
+                kind: 'sdk_delta',
+                delta: {
+                  uuid: msg.uuid,
+                  deltas: [msg.delta],
+                  session_id: msg.session_id,
+                  _channelModelId: msg._channelModelId,
+                },
+              })
+              continue
+            }
             const isPartialMessage = isPartialSDKMessage(msg)
             if (msg.type === 'result') {
               const skillActivations = mergeSkillActivations(

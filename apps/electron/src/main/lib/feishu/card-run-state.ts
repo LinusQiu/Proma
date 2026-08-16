@@ -1,5 +1,6 @@
 import type {
   AgentStreamPayload,
+  AgentAssistantDelta,
   SDKAssistantMessage,
   SDKResultMessage,
   SDKUserMessage,
@@ -9,7 +10,7 @@ import { isPartialSDKMessage } from '../bridge-agent-message-utils'
 /**
  * 飞书流式卡片的运行时状态机。
  *
- * 把 AgentStreamPayload（sdk_message + proma_event）累积成一个结构化的
+ * 把 AgentStreamPayload（sdk_message + sdk_delta + proma_event）累积成一个结构化的
  * RunState，便于渲染层无时序地把状态转成 CardKit 2.0 JSON。设计参考
  * zara/feishu-claude-code-bridge `src/card/run-state.ts`，但消费的是
  * Proma 的 SDKMessage 形态而非 claude CLI 的 stream-json。
@@ -44,6 +45,8 @@ export interface RunState {
   reasoning: { content: string; active: boolean }
   /** Pi partial 帧按 assistant UUID 保存的累计快照，用于计算增量。 */
   partialAssistantSnapshots: Record<string, PartialAssistantSnapshot>
+  /** Direct Pi Delta 已经在 blocks/reasoning 中消费过的 assistant UUID。 */
+  deltaAssistantUuids: Record<string, true>
   footer: FooterStatus
   terminal: Terminal
   errorMsg?: string
@@ -65,6 +68,7 @@ export function createInitialState(): RunState {
     blocks: [],
     reasoning: { content: '', active: false },
     partialAssistantSnapshots: {},
+    deltaAssistantUuids: {},
     footer: 'thinking',
     terminal: 'running',
     startedAt: Date.now(),
@@ -167,6 +171,28 @@ function stringifyToolResult(content: unknown): string {
 }
 
 export function reduce(state: RunState, payload: AgentStreamPayload): RunState {
+  if (payload.kind === 'sdk_delta') {
+    const next = payload.delta.deltas.reduce((next, delta) => {
+      switch (delta.type) {
+        case 'text_delta':
+          return delta.delta ? appendText(next, delta.delta) : next
+        case 'thinking_delta':
+          return delta.delta ? appendThinking(next, delta.delta) : next
+        case 'toolcall_start':
+        case 'toolcall_end': {
+          const toolCall = delta.toolCall
+          return toolCall ? startTool(next, toolCall.id, toolCall.name, toolCall.arguments ?? {}) : next
+        }
+        default:
+          return next
+      }
+    }, state)
+    return {
+      ...next,
+      deltaAssistantUuids: { ...next.deltaAssistantUuids, [payload.delta.uuid]: true },
+    }
+  }
+
   if (payload.kind === 'sdk_message') {
     const msg = payload.message
 
@@ -180,6 +206,7 @@ export function reduce(state: RunState, payload: AgentStreamPayload): RunState {
       if (isPartial && !assistantId) return state
 
       const previousSnapshot = assistantId ? state.partialAssistantSnapshots[assistantId] : undefined
+      const consumedByDelta = assistantId ? state.deltaAssistantUuids[assistantId] === true : false
       const useCumulativeSnapshot = isPartial || previousSnapshot != null
       const partialBlocks: PartialAssistantSnapshot['blocks'] = {}
       let next = state
@@ -194,6 +221,7 @@ export function reduce(state: RunState, payload: AgentStreamPayload): RunState {
 
       for (const [index, block] of (am.message?.content ?? []).entries()) {
         if (block.type === 'text') {
+          if (consumedByDelta) continue
           const text = (block as { text?: unknown }).text
           if (typeof text === 'string') {
             const previous = previousSnapshot?.blocks[index]
@@ -204,6 +232,7 @@ export function reduce(state: RunState, payload: AgentStreamPayload): RunState {
             if (isPartial) partialBlocks[index] = { type: 'text', content: text }
           }
         } else if (block.type === 'thinking') {
+          if (consumedByDelta) continue
           const thinking = (block as { thinking?: unknown }).thinking
           if (typeof thinking === 'string') {
             const previous = previousSnapshot?.blocks[index]
@@ -229,7 +258,12 @@ export function reduce(state: RunState, payload: AgentStreamPayload): RunState {
       }
       if (assistantId && previousSnapshot) {
         const { [assistantId]: _, ...partialAssistantSnapshots } = next.partialAssistantSnapshots
-        return { ...next, partialAssistantSnapshots }
+        const { [assistantId]: _delta, ...deltaAssistantUuids } = next.deltaAssistantUuids
+        return { ...next, partialAssistantSnapshots, deltaAssistantUuids }
+      }
+      if (assistantId && consumedByDelta) {
+        const { [assistantId]: _, ...deltaAssistantUuids } = next.deltaAssistantUuids
+        return { ...next, deltaAssistantUuids }
       }
       return next
     }
