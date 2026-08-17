@@ -251,12 +251,33 @@ function writeIndex(index: AgentSessionsIndex): void {
   }
 }
 
-/**
- * 获取所有会话（按 updatedAt 降序）
- */
+/** 按最近更新时间排序会话副本，避免修改索引数组本身。 */
+function sortSessionsByUpdatedAtDesc(sessions: AgentSessionMeta[]): AgentSessionMeta[] {
+  return [...sessions].sort((a, b) => b.updatedAt - a.updatedAt)
+}
+
+/** 获取所有会话（按 updatedAt 降序） */
 export function listAgentSessions(): AgentSessionMeta[] {
   const index = readIndex()
-  return index.sessions.sort((a, b) => b.updatedAt - a.updatedAt)
+  return sortSessionsByUpdatedAtDesc(index.sessions)
+}
+
+/** 获取未归档会话，供侧栏 active 视图按需读取。 */
+export function listActiveAgentSessions(): AgentSessionMeta[] {
+  const index = readIndex()
+  return sortSessionsByUpdatedAtDesc(index.sessions.filter((session) => !session.archived))
+}
+
+/** 获取归档会话，只有用户进入归档视图时才调用。 */
+export function listArchivedAgentSessions(): AgentSessionMeta[] {
+  const index = readIndex()
+  return sortSessionsByUpdatedAtDesc(index.sessions.filter((session) => session.archived))
+}
+
+/** 获取归档数量，不把归档会话元数据传到 renderer。 */
+export function countArchivedAgentSessions(): number {
+  const index = readIndex()
+  return index.sessions.reduce((count, session) => count + (session.archived ? 1 : 0), 0)
 }
 
 /**

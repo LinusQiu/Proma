@@ -508,6 +508,15 @@ export interface ElectronAPI {
   /** 获取 Agent 会话列表 */
   listAgentSessions: () => Promise<AgentSessionMeta[]>
 
+  /** 获取未归档会话列表，供左侧 active 视图使用 */
+  listActiveAgentSessions: () => Promise<AgentSessionMeta[]>
+
+  /** 获取归档会话列表，进入归档视图时按需调用 */
+  listArchivedAgentSessions: () => Promise<AgentSessionMeta[]>
+
+  /** 获取归档会话数量，不返回归档元数据 */
+  countArchivedAgentSessions: () => Promise<number>
+
   /** 创建 Agent 会话 */
   createAgentSession: (title?: string, channelId?: string, workspaceId?: string, modelId?: string) => Promise<AgentSessionMeta>
 
@@ -1702,6 +1711,18 @@ const electronAPI: ElectronAPI = {
   // Agent 会话管理
   listAgentSessions: () => {
     return ipcRenderer.invoke(AGENT_IPC_CHANNELS.LIST_SESSIONS)
+  },
+
+  listActiveAgentSessions: () => {
+    return ipcRenderer.invoke(AGENT_IPC_CHANNELS.LIST_ACTIVE_SESSIONS)
+  },
+
+  listArchivedAgentSessions: () => {
+    return ipcRenderer.invoke(AGENT_IPC_CHANNELS.LIST_ARCHIVED_SESSIONS)
+  },
+
+  countArchivedAgentSessions: () => {
+    return ipcRenderer.invoke(AGENT_IPC_CHANNELS.COUNT_ARCHIVED_SESSIONS)
   },
 
   createAgentSession: (title?: string, channelId?: string, workspaceId?: string, modelId?: string) => {

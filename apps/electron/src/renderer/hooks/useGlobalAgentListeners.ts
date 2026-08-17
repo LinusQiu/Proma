@@ -701,7 +701,7 @@ export function useGlobalAgentListeners(): void {
         return
       }
 
-      window.electronAPI.listAgentSessions()
+      window.electronAPI.listActiveAgentSessions()
         .then((sessions) => {
           unstable_batchedUpdates(() => applyActivation(sessions))
         })
@@ -898,7 +898,7 @@ export function useGlobalAgentListeners(): void {
     })
 
     // ===== 0. 初始化：从持久化 meta 恢复 stoppedByUser 状态 =====
-    window.electronAPI.listAgentSessions().then((sessions) => {
+    window.electronAPI.listActiveAgentSessions().then((sessions) => {
       const stoppedIds = new Set<string>(
         sessions.filter((s) => s.stoppedByUser).map((s) => s.id)
       )

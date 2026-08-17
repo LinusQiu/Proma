@@ -776,6 +776,7 @@ export function LeftSidebar({ width, noTransition }: LeftSidebarProps): React.Re
 
   // Agent 模式状态
   const [agentSessions, setAgentSessions] = useAtom(agentSessionsAtom)
+  const [archivedAgentSessionCount, setArchivedAgentSessionCount] = React.useState(0)
   const [currentAgentSessionId, setCurrentAgentSessionId] = useAtom(currentAgentSessionIdAtom)
   const agentIndicatorMap = useAtomValue(agentSessionIndicatorMapAtom)
   const unviewedCompletedSessionIds = useAtomValue(unviewedCompletedSessionIdsAtom)
@@ -818,9 +819,28 @@ export function LeftSidebar({ width, noTransition }: LeftSidebarProps): React.Re
   const setSearchDialogOpen = useSetAtom(searchDialogOpenAtom)
   const newChatShortcutLabel = getAcceleratorDisplay(getActiveAccelerator('new-session'))
 
+  /** 归档会话只在用户打开归档视图时加载；active 视图只保留未归档元数据。 */
+  const refreshAgentSidebarSessions = React.useCallback(async (includeArchived: boolean): Promise<void> => {
+    const [activeSessions, archivedCount] = await Promise.all([
+      window.electronAPI.listActiveAgentSessions(),
+      window.electronAPI.countArchivedAgentSessions(),
+    ])
+    const sessions = includeArchived
+      ? [...activeSessions, ...(await window.electronAPI.listArchivedAgentSessions())]
+      : activeSessions
+    setAgentSessions(sessions)
+    setArchivedAgentSessionCount(archivedCount)
+  }, [setAgentSessions])
+
   const handleOpenSettings = React.useCallback((): void => {
     setSettingsOpen(true)
   }, [setSettingsOpen])
+
+  /** 归档视图按需加载归档列表，离开后恢复轻量 active 列表。 */
+  React.useEffect(() => {
+    if (mode !== 'agent') return
+    refreshAgentSidebarSessions(viewMode === 'archived').catch(console.error)
+  }, [mode, refreshAgentSidebarSessions, viewMode])
 
   const handleUpdateButtonClick = React.useCallback((): void => {
     setSettingsTab('about')
@@ -1021,13 +1041,9 @@ export function LeftSidebar({ width, noTransition }: LeftSidebarProps): React.Re
     [conversations]
   )
 
-  /** 已归档 Agent 会话数量（跨项目） */
-  const archivedAgentSessionCount = React.useMemo(
-    () => agentSessions.filter((s) => s.archived && !draftSessionIds.has(s.id)).length,
-    [agentSessions, draftSessionIds]
-  )
+  /** 已归档 Agent 会话数量由主进程轻量统计返回，active 视图不扫描归档元数据。 */
 
-  // 初始加载对话列表 + 用户档案 + Agent 会话
+  // 初始加载对话列表 + 用户档案
   React.useEffect(() => {
     window.electronAPI
       .listConversations()
@@ -1039,22 +1055,20 @@ export function LeftSidebar({ width, noTransition }: LeftSidebarProps): React.Re
       .getUserProfile()
       .then(setUserProfile)
       .catch(console.error)
-    window.electronAPI
-      .listAgentSessions()
-      .then(setAgentSessions)
-      .catch(console.error)
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [setConversations, setUserProfile, setAgentSessions])
+  }, [setConversations, setUserProfile])
 
   // 窗口聚焦时重新同步列表，修复长时间后前后端不一致
   React.useEffect(() => {
     const handleFocus = (): void => {
       window.electronAPI.listConversations().then(setConversations).catch(console.error)
-      window.electronAPI.listAgentSessions().then(setAgentSessions).catch(console.error)
+      if (mode === 'agent') {
+        refreshAgentSidebarSessions(viewMode === 'archived').catch(console.error)
+      }
     }
     window.addEventListener('focus', handleFocus)
     return () => window.removeEventListener('focus', handleFocus)
-  }, [setConversations, setAgentSessions])
+  }, [mode, refreshAgentSidebarSessions, setConversations, viewMode])
 
   /** 打开/关闭自动任务列表 */
   const handleOpenAutomations = React.useCallback((): void => {
@@ -1237,9 +1251,8 @@ export function LeftSidebar({ width, noTransition }: LeftSidebarProps): React.Re
           }
         }
         await window.electronAPI.deleteAgentSession(pendingDeleteId)
-        // 全量刷新确保与后端同步
-        const sessions = await window.electronAPI.listAgentSessions()
-        setAgentSessions(sessions)
+        // 按当前视图刷新：active 不重新加载归档元数据。
+        await refreshAgentSidebarSessions(viewMode === 'archived')
       } catch (error) {
         console.error('[侧边栏] 删除 Agent 会话失败:', error)
         // 即使后端报错，也从本地列表移除（可能是会话已不存在）
@@ -1421,13 +1434,10 @@ export function LeftSidebar({ width, noTransition }: LeftSidebarProps): React.Re
       setActiveTabId(nextActiveTabId)
       syncActiveTabSideEffects(nextActiveTabId ? nextTabs.find((tab) => tab.id === nextActiveTabId) ?? null : null)
 
-      const [remainingWorkspaces, sessions] = await Promise.all([
-        window.electronAPI.listAgentWorkspaces(),
-        window.electronAPI.listAgentSessions(),
-      ])
+      const remainingWorkspaces = await window.electronAPI.listAgentWorkspaces()
 
       setWorkspaces(remainingWorkspaces)
-      setAgentSessions(sessions)
+      await refreshAgentSidebarSessions(viewMode === 'archived')
 
       setExpandedExtraCountMap((prev) => {
         if (!prev.has(workspaceId)) return prev
@@ -1480,6 +1490,8 @@ export function LeftSidebar({ width, noTransition }: LeftSidebarProps): React.Re
     syncActiveTabSideEffects,
     setWorkspaces,
     setAgentSessions,
+    refreshAgentSidebarSessions,
+    viewMode,
     currentWorkspaceId,
     setCurrentWorkspaceId,
   ])
@@ -2011,14 +2023,7 @@ export function LeftSidebar({ width, noTransition }: LeftSidebarProps): React.Re
           await window.electronAPI.togglePinAgentSession(child.id)
         }
       }
-      const refreshedSessions = delegatedChildren.length > 0
-        ? await window.electronAPI.listAgentSessions()
-        : null
-      if (refreshedSessions) {
-        setAgentSessions(refreshedSessions)
-      } else {
-        setAgentSessions((prev) => replaceAgentSessionInFreshnessOrder(prev, updated))
-      }
+      await refreshAgentSidebarSessions(viewMode === 'archived')
       if (updated.pinned) {
         if (original?.archived && !updated.archived) {
           toast.success('已置顶', { description: '已自动取消归档' })
@@ -2041,13 +2046,13 @@ export function LeftSidebar({ width, noTransition }: LeftSidebarProps): React.Re
       // 重新拉取磁盘真实状态，避免侧边栏与磁盘不一致直到下次重载。
       if (delegatedChildren.length > 0) {
         try {
-          setAgentSessions(await window.electronAPI.listAgentSessions())
+          await refreshAgentSidebarSessions(viewMode === 'archived')
         } catch (refreshError) {
           console.error('[侧边栏] 置顶失败后刷新会话列表失败:', refreshError)
         }
       }
     }
-  }, [draftSessionIds, store, setAgentSessions])
+  }, [draftSessionIds, refreshAgentSidebarSessions, setAgentSessions, store, viewMode])
 
   /** 切换 Agent 会话星标状态 */
   const handleToggleStarAgent = React.useCallback(async (id: string): Promise<void> => {
@@ -2086,14 +2091,7 @@ export function LeftSidebar({ width, noTransition }: LeftSidebarProps): React.Re
           }
         }
       }
-      const refreshedSessions = delegatedChildren.length > 0
-        ? await window.electronAPI.listAgentSessions()
-        : null
-      if (refreshedSessions) {
-        setAgentSessions(refreshedSessions)
-      } else {
-        setAgentSessions((prev) => replaceAgentSessionInFreshnessOrder(prev, updated))
-      }
+      await refreshAgentSidebarSessions(viewMode === 'archived')
       // 归档时自动关闭该会话的标签页，并同步新激活标签的副作用，
       // 否则 RightSidePanel（依赖 currentAgentSessionIdAtom）会因为
       // 指针被错误置 null 而消失。
@@ -2118,13 +2116,13 @@ export function LeftSidebar({ width, noTransition }: LeftSidebarProps): React.Re
           closeArchivedAgentTabs(changedChildIds)
         }
         try {
-          setAgentSessions(await window.electronAPI.listAgentSessions())
+          await refreshAgentSidebarSessions(viewMode === 'archived')
         } catch (refreshError) {
           console.error('[侧边栏] 归档失败后刷新会话列表失败:', refreshError)
         }
       }
     }
-  }, [closeArchivedAgentTabs, draftSessionIds, store, setAgentSessions])
+  }, [closeArchivedAgentTabs, draftSessionIds, refreshAgentSidebarSessions, setAgentSessions, store, viewMode])
 
   /** 请求迁移会话到其他项目（弹出迁移对话框） */
   const handleRequestMove = React.useCallback((id: string): void => {
@@ -2138,8 +2136,7 @@ export function LeftSidebar({ width, noTransition }: LeftSidebarProps): React.Re
   const handleSessionMoved = async (updatedSession: AgentSessionMeta, targetWorkspaceName: string): Promise<void> => {
     const movedSessionIds = collectDelegatedSessionTreeIds(store.get(agentSessionsAtom), updatedSession.id)
     try {
-      const sessions = await window.electronAPI.listAgentSessions()
-      setAgentSessions(sessions)
+      await refreshAgentSidebarSessions(viewMode === 'archived')
     } catch (error) {
       console.error('[侧边栏] 迁移后刷新 Agent 会话列表失败:', error)
       setAgentSessions((prev) => replaceAgentSessionInFreshnessOrder(prev, updatedSession))
@@ -2222,8 +2219,9 @@ export function LeftSidebar({ width, noTransition }: LeftSidebarProps): React.Re
     [agentProjectGroups, automationGroup, automationGroupOrder],
   )
 
-  /** Agent 归档会话按日期分组（跨项目），含委派树 */
+  /** Agent 归档会话按日期分组（跨项目），仅在归档视图已加载时构建。 */
   const archivedAgentSessionTrees = React.useMemo(() => {
+    if (viewMode !== 'archived') return []
     const archived = sortAgentSessionsByUpdatedAtDesc(
       agentSessions.filter((s) => s.archived && !draftSessionIds.has(s.id))
     )
@@ -2231,7 +2229,7 @@ export function LeftSidebar({ width, noTransition }: LeftSidebarProps): React.Re
     // groupByDate 要求 T extends { updatedAt: number }，AgentSessionTreeItem 不直接满足
     const wrapped = trees.map((tree) => ({ updatedAt: tree.session.updatedAt, tree }))
     return groupByDate(wrapped).map((g) => ({ label: g.label, items: g.items.map((w) => w.tree) }))
-  }, [agentSessions, draftSessionIds])
+  }, [agentSessions, draftSessionIds, viewMode])
 
   const handleRailModeSwitch = React.useCallback((targetMode: AppMode) => {
     setViewMode('active')
@@ -2692,6 +2690,7 @@ export function LeftSidebar({ width, noTransition }: LeftSidebarProps): React.Re
   }, [activeSessionId, agentIndicatorMap, archivedAgentSessionTrees, collapsedDelegationParentIds, expandedDelegationParentIds, handleAgentRename, handleRequestDelete, handleRequestMove, handleSelectAgentSession, handleToggleArchiveAgent, handleToggleDelegationParent, handleTogglePinAgent, handleToggleStarAgent, relativeTimeNow, sessionHoverPreviewEnabled, workspaceNameMap])
 
   const agentActiveVirtualRows = React.useMemo<VirtualSidebarRow[]>(() => {
+    if (viewMode !== 'active') return []
     const rows: VirtualSidebarRow[] = []
 
     const pushSessionTreeRows = (
@@ -3011,21 +3010,8 @@ export function LeftSidebar({ width, noTransition }: LeftSidebarProps): React.Re
     setPendingRestoreProjectRootId,
     workspaceNameMap,
     currentWorkspaceId,
+    viewMode,
   ])
-
-  const activeAgentRowId = React.useMemo(() => {
-    if (!activeSessionId) return null
-    const directRow = agentActiveVirtualRows.find((row) => (
-      row.id === `agent-${activeSessionId}` || row.id === `agent-child-${activeSessionId}`
-    ))
-    if (directRow) return directRow.id
-
-    const parentItem = [
-      ...pinnedAgentSessionTrees,
-      ...displayProjectGroups.flatMap((group) => buildAgentSessionTrees(group.sessions)),
-    ].find((item) => treeContainsSessionId(item, activeSessionId))
-    return parentItem ? `agent-${parentItem.session.id}` : null
-  }, [activeSessionId, agentActiveVirtualRows, displayProjectGroups, pinnedAgentSessionTrees])
 
   // ===== 折叠状态：精简图标视图 =====
   if (sidebarCollapsed) {
@@ -3379,12 +3365,11 @@ export function LeftSidebar({ width, noTransition }: LeftSidebarProps): React.Re
           activeRowId={activeSessionId ? `chat-${activeSessionId}` : null}
         />
       ) : mode === 'agent' && viewMode === 'active' ? (
-        <VirtualSidebarList
-          key="agent-active-list"
-          className="flex-1 px-2 pb-3"
-          rows={agentActiveVirtualRows}
-          activeRowId={activeAgentRowId}
-        />
+        <div className="min-h-0 flex-1 overflow-y-auto scrollbar-thin titlebar-no-drag px-2 pb-3">
+          {agentActiveVirtualRows.map((row) => (
+            <React.Fragment key={row.id}>{row.content}</React.Fragment>
+          ))}
+        </div>
       ) : (
         <>
           {/* 归档视图标题栏 */}
