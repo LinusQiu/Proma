@@ -25,6 +25,7 @@ import { WindowControls } from '@/components/WindowControls'
 import { SettingsPanel } from '@/components/settings/SettingsPanel'
 import { detectIsWindows, WINDOW_CONTROLS_INSET_RIGHT } from '@/lib/platform'
 import { cn } from '@/lib/utils'
+import { Toaster } from '@/components/ui/sonner'
 
 const MIN_RIGHT_PANEL_WIDTH = 360
 const RIGHT_PANEL_MAX_VIEWPORT_RATIO = 3 / 5
@@ -231,6 +232,8 @@ export function AppShell(): React.ReactElement {
             <div className={cn('flex-1 min-w-0 relative z-[60]', isClassic && 'p-2')}>
               {/* 主内容区域（TabBar + TabContent） */}
               <MainArea />
+              {/* 全局 Toast 固定在 Agent 历史主区右上角，不进入右侧原生浏览器面板。 */}
+              <Toaster position="top-right" offset={{ top: 58, right: 12 }} className="agent-history-toaster" />
             </div>
 
             {/* 右侧边栏：Agent 文件面板 */}
