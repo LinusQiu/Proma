@@ -76,6 +76,7 @@ export interface AgentTerminalOpenEvent {
   terminalId: string
   title: string
   cwd: string
+  profile?: TerminalProfile
 }
 
 export interface AgentTerminalCloseEvent {
@@ -98,4 +99,15 @@ export function isTerminalProfile(value: unknown): value is TerminalProfile {
     || value === 'cmd'
     || value === 'git-bash'
     || value === 'wsl'
+}
+
+/**
+ * 把外部输入（如 Agent 工具参数）解析为 TerminalProfile。
+ * 省略或空串回退到 default；显式传入未知值时抛错而非静默回退，
+ * 避免调用方误以为终端运行在指定 shell 上。
+ */
+export function parseTerminalProfile(value: unknown): TerminalProfile {
+  if (value === undefined || value === null || value === '') return 'default'
+  if (isTerminalProfile(value)) return value
+  throw new Error(`shell 无效：${String(value)}。可选值：default、pwsh、powershell、cmd、git-bash、wsl、bash、zsh`)
 }
