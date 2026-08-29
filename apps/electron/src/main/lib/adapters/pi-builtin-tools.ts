@@ -10,7 +10,7 @@
 import { Type } from 'typebox'
 import type { ToolDefinition } from '@earendil-works/pi-coding-agent'
 import type { AgentToolResult } from '@earendil-works/pi-agent-core'
-import { AGENT_IPC_CHANNELS, normalizePathForCompare, parseTerminalProfile } from '@proma/shared'
+import { AGENT_IPC_CHANNELS, getTerminalProfilesForPlatform, normalizePathForCompare, parseTerminalProfile } from '@proma/shared'
 import type {
   CreateAutomationInput,
   PromaPermissionMode,
@@ -113,8 +113,8 @@ export interface PiBuiltinToolsContext {
   triggeredBy?: 'user' | 'automation' | 'delegation' | 'external'
   /** Windows 设备是否已有可供 Pi Bash 使用的 Git Bash 或 WSL。 */
   windowsShellAvailable?: boolean
-  /** 省略 shell 时使用用户最近一次明确选择的 profile。 */
-  lastTerminalProfile?: TerminalProfile
+  /** Windows 上省略 shell 时使用用户最近一次明确选择的 profile。 */
+  lastWindowsTerminalProfile?: TerminalProfile
 }
 
 function jsonToolResult(payload: unknown): AgentToolResult<unknown> {
@@ -1329,6 +1329,16 @@ function buildAgentTerminalTools(sdk: PiSdk, ctx: PiBuiltinToolsContext): ToolDe
   // 无用户在场的来源不能启动或驱动本地交互终端；这既没有可见性，也会扩大自动任务与外部 Bridge 的权限。
   if (ctx.triggeredBy === 'automation' || ctx.triggeredBy === 'delegation' || ctx.triggeredBy === 'external') return []
 
+  const supportedTerminalProfiles = getTerminalProfilesForPlatform(process.platform)
+  const shellProfileDescription = process.platform === 'win32'
+    ? `Shell profile for the new terminal: ${supportedTerminalProfiles.join(' | ')}. default uses Windows PowerShell when available; pwsh, git-bash, and wsl select their respective Windows shell. Invalid values fail explicitly instead of falling back.`
+    : process.platform === 'darwin'
+      ? `Shell profile for the new terminal: ${supportedTerminalProfiles.join(' | ')}. default preserves the user's configured login shell; zsh and bash apply only to this terminal. Windows-only profiles fail explicitly.`
+      : `Shell profile for the new terminal: ${supportedTerminalProfiles.join(' | ')}. default uses the configured login shell when available; zsh and bash apply only to this terminal. Unsupported profiles fail explicitly.`
+  const defaultShellBehavior = process.platform === 'win32'
+    ? 'If shell is omitted, Proma reuses the user’s last selected Windows shell when available; otherwise it uses the platform default.'
+    : 'If shell is omitted, Proma uses the platform default shell without persisting an explicit per-terminal selection.'
+
   const terminalInput = (args: Record<string, unknown>): { cwd?: string; title?: string; profile?: TerminalProfile } => ({
     ...(typeof args.cwd === 'string' && args.cwd.trim() ? { cwd: args.cwd.trim() } : {}),
     ...(typeof args.title === 'string' && args.title.trim() ? { title: args.title.trim() } : {}),
@@ -1342,13 +1352,13 @@ function buildAgentTerminalTools(sdk: PiSdk, ctx: PiBuiltinToolsContext): ToolDe
     const input = terminalInput(args)
     const profile = options.reuse && !explicit
       ? undefined
-      : input.profile ?? ctx.lastTerminalProfile
+      : input.profile ?? (process.platform === 'win32' ? ctx.lastWindowsTerminalProfile : undefined)
     return { input: { ...input, ...(profile ? { profile } : {}) }, explicit }
   }
   const recordExplicitProfile = (profile: TerminalProfile, explicit: boolean): void => {
-    if (!explicit) return
+    if (!explicit || process.platform !== 'win32') return
     try {
-      updateSettings({ lastTerminalProfile: profile })
+      updateSettings({ lastWindowsTerminalProfile: profile })
     } catch (error) {
       console.warn('[终端] 保存最近 Shell 失败:', error)
     }
@@ -1359,12 +1369,12 @@ function buildAgentTerminalTools(sdk: PiSdk, ctx: PiBuiltinToolsContext): ToolDe
     sdk.defineTool({
       name: 'TerminalOpen',
       label: '打开 Agent 终端',
-      description: 'Open a visible terminal Tab in the Agent right workspace. cwd controls the initial directory and must resolve within the current session’s authorized directories; it is not an OS sandbox. If shell is omitted, Proma reuses the user’s last selected shell when available; otherwise it uses the platform default. This tool opens an interactive terminal but does not run a command.',
+      description: `Open a visible terminal Tab in the Agent right workspace. cwd controls the initial directory and must resolve within the current session’s authorized directories; it is not an OS sandbox. ${defaultShellBehavior} This tool opens an interactive terminal but does not run a command.`,
       promptSnippet: 'Open a visible Agent terminal at an authorized cwd. Do not use it to silently run commands.',
       parameters: Type.Object({
         cwd: Type.Optional(Type.String({ description: 'Absolute or Agent-CWD-relative initial directory. It must resolve within the current session’s authorized roots.' })),
         title: Type.Optional(Type.String({ description: 'Short visible terminal title.' })),
-        shell: Type.Optional(Type.String({ description: 'Shell profile for the new terminal: default | pwsh | powershell | cmd | git-bash | wsl | bash | zsh. Windows: pwsh (PowerShell 7+), powershell (Windows PowerShell 5.1, default), cmd, git-bash, wsl. macOS/Linux: bash, zsh (platform default otherwise). Invalid values fail explicitly instead of falling back.' })),
+        shell: Type.Optional(Type.String({ description: shellProfileDescription })),
       }),
       async execute(_toolCallId, params) {
         const args = params as Record<string, unknown>
@@ -1384,7 +1394,7 @@ function buildAgentTerminalTools(sdk: PiSdk, ctx: PiBuiltinToolsContext): ToolDe
         terminalId: Type.Optional(Type.String({ description: 'Current-session running Agent terminal to reuse. First inspect candidates with TerminalList; do not reuse an interactive, long-running, or unverified-busy terminal.' })),
         cwd: Type.Optional(Type.String({ description: 'Absolute or Agent-CWD-relative directory within the current authorized roots. Used only when opening a new terminal.' })),
         title: Type.Optional(Type.String({ description: 'Short visible terminal title. Used only when opening a new terminal.' })),
-        shell: Type.Optional(Type.String({ description: 'Shell profile, used only when opening a new terminal: default | pwsh | powershell | cmd | git-bash | wsl | bash | zsh. Windows: pwsh (PowerShell 7+), powershell (Windows PowerShell 5.1, default), cmd, git-bash, wsl. macOS/Linux: bash, zsh. When reusing terminalId, a mismatching shell fails; omit it to keep the existing shell.' })),
+        shell: Type.Optional(Type.String({ description: `${shellProfileDescription} Used only when opening a new terminal. When reusing terminalId, an explicitly mismatching shell fails; omit it to keep the existing shell.` })),
       }),
       async execute(_toolCallId, params) {
         const args = params as Record<string, unknown>

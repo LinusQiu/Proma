@@ -20,6 +20,22 @@ export const TERMINAL_IPC_CHANNELS = {
 
 export type TerminalProfile = 'default' | 'zsh' | 'bash' | 'pwsh' | 'powershell' | 'cmd' | 'git-bash' | 'wsl'
 
+const POSIX_TERMINAL_PROFILES = ['default', 'zsh', 'bash'] as const satisfies readonly TerminalProfile[]
+const WINDOWS_TERMINAL_PROFILES = ['default', 'pwsh', 'powershell', 'cmd', 'git-bash', 'wsl'] as const satisfies readonly TerminalProfile[]
+
+/** 返回当前平台允许请求的终端 profile；实际可执行性仍由 Terminal Runtime 在创建 PTY 时校验。 */
+export function getTerminalProfilesForPlatform(platform: string): readonly TerminalProfile[] {
+  if (platform === 'win32') return WINDOWS_TERMINAL_PROFILES
+  if (platform === 'darwin' || platform === 'linux') return POSIX_TERMINAL_PROFILES
+  return ['default']
+}
+
+/** 防止 profile 在不支持它的平台上静默解析为另一个 shell。 */
+export function assertTerminalProfileSupported(profile: TerminalProfile, platform: string): TerminalProfile {
+  if (getTerminalProfilesForPlatform(platform).includes(profile)) return profile
+  throw new Error(`shell ${profile} 不支持当前平台 ${platform}；可选值：${getTerminalProfilesForPlatform(platform).join('、')}`)
+}
+
 export interface TerminalCreateInput {
   terminalId: string
   /** 终端所属 Agent 会话；主进程据此在会话删除时回收 PTY。 */

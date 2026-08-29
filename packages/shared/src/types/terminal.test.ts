@@ -1,5 +1,10 @@
 import { describe, expect, test } from 'bun:test'
-import { isTerminalProfile, parseTerminalProfile } from './terminal'
+import {
+  assertTerminalProfileSupported,
+  getTerminalProfilesForPlatform,
+  isTerminalProfile,
+  parseTerminalProfile,
+} from './terminal'
 
 describe('终端 profile 解析', () => {
   test('Given 省略或空串 When 解析 Then 回退到 default', () => {
@@ -31,5 +36,19 @@ describe('终端 profile 解析', () => {
       expect(String(error)).toContain('git-bash')
       expect(String(error)).toContain('wsl')
     }
+  })
+
+  test('Given 不同平台 When 获取支持列表 Then 仅返回该平台允许的 profile', () => {
+    expect(getTerminalProfilesForPlatform('darwin')).toEqual(['default', 'zsh', 'bash'])
+    expect(getTerminalProfilesForPlatform('linux')).toEqual(['default', 'zsh', 'bash'])
+    expect(getTerminalProfilesForPlatform('win32')).toEqual(['default', 'pwsh', 'powershell', 'cmd', 'git-bash', 'wsl'])
+  })
+
+  test('Given 不支持当前平台的合法 profile When 校验 Then 显式抛错', () => {
+    expect(() => assertTerminalProfileSupported('pwsh', 'darwin')).toThrow('不支持当前平台 darwin')
+    expect(() => assertTerminalProfileSupported('git-bash', 'linux')).toThrow('不支持当前平台 linux')
+    expect(() => assertTerminalProfileSupported('zsh', 'win32')).toThrow('不支持当前平台 win32')
+    expect(assertTerminalProfileSupported('bash', 'darwin')).toBe('bash')
+    expect(assertTerminalProfileSupported('wsl', 'win32')).toBe('wsl')
   })
 })

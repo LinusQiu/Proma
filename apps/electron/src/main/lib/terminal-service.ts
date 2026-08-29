@@ -3,6 +3,7 @@ import {
   TERMINAL_IPC_CHANNELS,
   type AgentTerminalCloseEvent,
   type AgentTerminalOpenEvent,
+  assertTerminalProfileSupported,
   parseTerminalProfile,
   type TerminalCreateInput,
   type TerminalInput,
@@ -146,7 +147,7 @@ export async function openAgentTerminal(input: {
   allowedRoots?: string[]
 }): Promise<AgentTerminalRecord> {
   const cwd = resolveAgentTerminalCwd(input)
-  const profile = parseTerminalProfile(input.profile)
+  const profile = assertTerminalProfileSupported(parseTerminalProfile(input.profile), process.platform)
   const terminalId = randomUUID()
   const title = input.title?.trim().slice(0, 80) || 'Agent 终端'
   await createTerminal({ terminalId, sessionId: input.sessionId, cwd, profile, cols: 80, rows: 24 }, { strictCwd: true })
@@ -174,13 +175,14 @@ export async function executeAgentTerminal(input: {
 }): Promise<AgentTerminalRecord> {
   const command = input.command.trim()
   if (!command || command.length > 64 * 1024) throw new Error('终端命令为空或过长')
-  const profile = parseTerminalProfile(input.profile)
+  const profile = assertTerminalProfileSupported(parseTerminalProfile(input.profile), process.platform)
+  const profileWasSpecified = input.profile !== undefined && input.profile !== null && input.profile !== ''
 
   const requestedTerminalId = input.terminalId?.trim()
   if (requestedTerminalId) {
     const record = getOwnedAgentTerminal(input.sessionId, requestedTerminalId)
     if (record.status !== 'running') throw new Error('终端已退出，不能复用')
-    if (profile !== 'default' && record.profile !== profile) {
+    if (profileWasSpecified && record.profile !== profile) {
       throw new Error(`终端 ${requestedTerminalId} 运行在 ${record.profile}，不能以 ${profile} 复用；请省略 terminalId 另开新终端`)
     }
     await writeTerminal({ terminalId: record.terminalId, data: `${command}\r` })
