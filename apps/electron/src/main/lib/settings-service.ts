@@ -9,7 +9,7 @@ import { readFileSync, writeFileSync, existsSync } from 'node:fs'
 import { getSettingsPath } from './config-paths'
 import { DEFAULT_THEME_MODE } from '../../types'
 import type { AgentIslandSettings, AppSettings } from '../../types'
-import { isTerminalProfile } from '@proma/shared'
+import { getTerminalProfilesForPlatform, isTerminalProfile } from '@proma/shared'
 
 function sanitizeAgentIslandSettings(input: unknown): AgentIslandSettings | undefined {
   if (!input || typeof input !== 'object') return undefined
@@ -17,8 +17,10 @@ function sanitizeAgentIslandSettings(input: unknown): AgentIslandSettings | unde
   return typeof raw.enabled === 'boolean' ? { enabled: raw.enabled } : undefined
 }
 
-export function sanitizeTerminalProfile(input: unknown): AppSettings['lastWindowsTerminalProfile'] {
-  return isTerminalProfile(input) ? input : undefined
+export function sanitizeWindowsTerminalProfile(input: unknown): AppSettings['lastWindowsTerminalProfile'] {
+  return isTerminalProfile(input) && getTerminalProfilesForPlatform('win32').includes(input)
+    ? input
+    : undefined
 }
 
 /**
@@ -78,7 +80,7 @@ export function getSettings(): AppSettings {
       visionRelay: data.visionRelay ?? { enabled: false },
       windowsShellPreference: settings.windowsShellPreference ?? 'auto',
       lastWindowsTerminalProfile: process.platform === 'win32'
-        ? sanitizeTerminalProfile(settings.lastWindowsTerminalProfile ?? legacyLastTerminalProfile)
+        ? sanitizeWindowsTerminalProfile(settings.lastWindowsTerminalProfile ?? legacyLastTerminalProfile)
         : undefined,
       agentThinking: settings.agentThinking ?? { type: 'adaptive' },
       // 缺省 true：老配置文件未写该字段时保持推广默认开启

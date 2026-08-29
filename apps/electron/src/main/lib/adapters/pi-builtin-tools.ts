@@ -1339,6 +1339,7 @@ function buildAgentTerminalTools(sdk: PiSdk, ctx: PiBuiltinToolsContext): ToolDe
     ? 'If shell is omitted, Proma reuses the user’s last selected Windows shell when available; otherwise it uses the platform default.'
     : 'If shell is omitted, Proma uses the platform default shell without persisting an explicit per-terminal selection.'
 
+  let lastWindowsTerminalProfile = ctx.lastWindowsTerminalProfile
   const terminalInput = (args: Record<string, unknown>): { cwd?: string; title?: string; profile?: TerminalProfile } => ({
     ...(typeof args.cwd === 'string' && args.cwd.trim() ? { cwd: args.cwd.trim() } : {}),
     ...(typeof args.title === 'string' && args.title.trim() ? { title: args.title.trim() } : {}),
@@ -1352,13 +1353,14 @@ function buildAgentTerminalTools(sdk: PiSdk, ctx: PiBuiltinToolsContext): ToolDe
     const input = terminalInput(args)
     const profile = options.reuse && !explicit
       ? undefined
-      : input.profile ?? (process.platform === 'win32' ? ctx.lastWindowsTerminalProfile : undefined)
+      : input.profile ?? (process.platform === 'win32' ? lastWindowsTerminalProfile : undefined)
     return { input: { ...input, ...(profile ? { profile } : {}) }, explicit }
   }
   const recordExplicitProfile = (profile: TerminalProfile, explicit: boolean): void => {
     if (!explicit || process.platform !== 'win32') return
     try {
       updateSettings({ lastWindowsTerminalProfile: profile })
+      lastWindowsTerminalProfile = profile
     } catch (error) {
       console.warn('[终端] 保存最近 Shell 失败:', error)
     }

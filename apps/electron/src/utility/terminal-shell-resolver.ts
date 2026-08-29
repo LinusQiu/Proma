@@ -71,7 +71,10 @@ function resolveWindowsShell(
   const gitBash = join(programFiles, 'Git', 'bin', 'bash.exe')
   const powershell = join(env.SystemRoot || 'C:\\Windows', 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe')
   if (profile === 'wsl') return { file: 'wsl.exe', args: [], title: 'WSL' }
-  if (profile === 'git-bash' && canExecute(gitBash)) return { file: gitBash, args: ['--login', '-i'], title: 'Git Bash' }
+  if (profile === 'git-bash') {
+    if (!canExecute(gitBash)) throw new Error('Git Bash 不存在或不可执行')
+    return { file: gitBash, args: ['--login', '-i'], title: 'Git Bash' }
+  }
   if (profile === 'cmd') return { file: env.ComSpec || 'cmd.exe', args: [], title: 'Command Prompt' }
   if (profile === 'pwsh' || profile === 'powershell') return { file: 'pwsh.exe', args: ['-NoLogo'], title: 'PowerShell' }
   // 默认使用系统 Windows PowerShell；PowerShell 7、Git Bash 与 WSL 由 profile 显式选择。
