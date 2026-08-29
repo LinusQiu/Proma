@@ -9,11 +9,16 @@ import { readFileSync, writeFileSync, existsSync } from 'node:fs'
 import { getSettingsPath } from './config-paths'
 import { DEFAULT_THEME_MODE } from '../../types'
 import type { AgentIslandSettings, AppSettings } from '../../types'
+import { isTerminalProfile } from '@proma/shared'
 
 function sanitizeAgentIslandSettings(input: unknown): AgentIslandSettings | undefined {
   if (!input || typeof input !== 'object') return undefined
   const raw = input as { enabled?: unknown }
   return typeof raw.enabled === 'boolean' ? { enabled: raw.enabled } : undefined
+}
+
+export function sanitizeTerminalProfile(input: unknown): AppSettings['lastTerminalProfile'] {
+  return isTerminalProfile(input) ? input : undefined
 }
 
 /**
@@ -69,6 +74,7 @@ export function getSettings(): AppSettings {
       feishuSessionMirror: data.feishuSessionMirror ?? { mode: 'off' },
       visionRelay: data.visionRelay ?? { enabled: false },
       windowsShellPreference: settings.windowsShellPreference ?? 'auto',
+      lastTerminalProfile: sanitizeTerminalProfile(settings.lastTerminalProfile),
       agentThinking: settings.agentThinking ?? { type: 'adaptive' },
       // 缺省 true：老配置文件未写该字段时保持推广默认开启
       gitAttributionEnabled: settings.gitAttributionEnabled ?? true,

@@ -92,6 +92,7 @@ import {
   automationCreateToolParameters,
   discardInapplicableAutomationScheduleFields,
 } from './automation-tool-schema'
+import { updateSettings } from '../settings-service'
 import { getConfiguredVaultFileSystem, getVaultConfig } from '../vault-service'
 
 type PiSdk = typeof import('@earendil-works/pi-coding-agent')
@@ -112,6 +113,8 @@ export interface PiBuiltinToolsContext {
   triggeredBy?: 'user' | 'automation' | 'delegation' | 'external'
   /** Windows 设备是否已有可供 Pi Bash 使用的 Git Bash 或 WSL。 */
   windowsShellAvailable?: boolean
+  /** 省略 shell 时使用用户最近一次明确选择的 profile。 */
+  lastTerminalProfile?: TerminalProfile
 }
 
 function jsonToolResult(payload: unknown): AgentToolResult<unknown> {
@@ -1331,13 +1334,32 @@ function buildAgentTerminalTools(sdk: PiSdk, ctx: PiBuiltinToolsContext): ToolDe
     ...(typeof args.title === 'string' && args.title.trim() ? { title: args.title.trim() } : {}),
     ...('shell' in args ? { profile: parseTerminalProfile(args.shell) } : {}),
   })
+  const resolveTerminalInput = (
+    args: Record<string, unknown>,
+    options: { reuse: boolean } = { reuse: false },
+  ): { input: ReturnType<typeof terminalInput>; explicit: boolean } => {
+    const explicit = Object.prototype.hasOwnProperty.call(args, 'shell')
+    const input = terminalInput(args)
+    const profile = options.reuse && !explicit
+      ? undefined
+      : input.profile ?? ctx.lastTerminalProfile
+    return { input: { ...input, ...(profile ? { profile } : {}) }, explicit }
+  }
+  const recordExplicitProfile = (profile: TerminalProfile, explicit: boolean): void => {
+    if (!explicit) return
+    try {
+      updateSettings({ lastTerminalProfile: profile })
+    } catch (error) {
+      console.warn('[终端] 保存最近 Shell 失败:', error)
+    }
+  }
   const agentContext = { sessionId: ctx.sessionId, agentCwd: ctx.agentCwd, allowedRoots: ctx.allowedRoots }
 
   return [
     sdk.defineTool({
       name: 'TerminalOpen',
       label: '打开 Agent 终端',
-      description: 'Open a visible terminal Tab in the Agent right workspace. cwd controls the initial directory and must resolve within the current session’s authorized directories; it is not an OS sandbox. shell selects the interactive shell profile; it is resolved in a controlled runtime and falls back to the platform default when unavailable. This tool opens an interactive terminal but does not run a command.',
+      description: 'Open a visible terminal Tab in the Agent right workspace. cwd controls the initial directory and must resolve within the current session’s authorized directories; it is not an OS sandbox. If shell is omitted, Proma reuses the user’s last selected shell when available; otherwise it uses the platform default. This tool opens an interactive terminal but does not run a command.',
       promptSnippet: 'Open a visible Agent terminal at an authorized cwd. Do not use it to silently run commands.',
       parameters: Type.Object({
         cwd: Type.Optional(Type.String({ description: 'Absolute or Agent-CWD-relative initial directory. It must resolve within the current session’s authorized roots.' })),
@@ -1345,7 +1367,10 @@ function buildAgentTerminalTools(sdk: PiSdk, ctx: PiBuiltinToolsContext): ToolDe
         shell: Type.Optional(Type.String({ description: 'Shell profile for the new terminal: default | pwsh | powershell | cmd | git-bash | wsl | bash | zsh. Windows: pwsh (PowerShell 7+), powershell (Windows PowerShell 5.1, default), cmd, git-bash, wsl. macOS/Linux: bash, zsh (platform default otherwise). Invalid values fail explicitly instead of falling back.' })),
       }),
       async execute(_toolCallId, params) {
-        const record = await openAgentTerminal({ ...agentContext, ...terminalInput(params as Record<string, unknown>) })
+        const args = params as Record<string, unknown>
+        const { input, explicit } = resolveTerminalInput(args)
+        const record = await openAgentTerminal({ ...agentContext, ...input })
+        recordExplicitProfile(record.profile, explicit)
         return jsonToolResult({ terminal: record, visible: true, outputSharedWithAgent: false })
       },
     }),
@@ -1368,7 +1393,9 @@ function buildAgentTerminalTools(sdk: PiSdk, ctx: PiBuiltinToolsContext): ToolDe
         const terminalId = typeof args.terminalId === 'string' && args.terminalId.trim()
           ? args.terminalId.trim()
           : undefined
-        const record = await executeAgentTerminal({ ...agentContext, ...terminalInput(args), command, terminalId })
+        const { input, explicit } = resolveTerminalInput(args, { reuse: Boolean(terminalId) })
+        const record = await executeAgentTerminal({ ...agentContext, ...input, command, terminalId })
+        if (!terminalId) recordExplicitProfile(record.profile, explicit)
         return jsonToolResult({ terminal: record, commandStarted: true, reused: Boolean(terminalId), outputSharedWithAgent: false })
       },
     }),
