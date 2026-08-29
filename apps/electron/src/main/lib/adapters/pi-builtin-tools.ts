@@ -1348,13 +1348,18 @@ function buildAgentTerminalTools(sdk: PiSdk, ctx: PiBuiltinToolsContext): ToolDe
   const resolveTerminalInput = (
     args: Record<string, unknown>,
     options: { reuse: boolean } = { reuse: false },
-  ): { input: ReturnType<typeof terminalInput>; explicit: boolean } => {
+  ): { input: ReturnType<typeof terminalInput>; explicit: boolean; usingRememberedProfile: boolean } => {
     const explicit = Object.prototype.hasOwnProperty.call(args, 'shell')
     const input = terminalInput(args)
-    const profile = options.reuse && !explicit
-      ? undefined
-      : input.profile ?? (process.platform === 'win32' ? lastWindowsTerminalProfile : undefined)
-    return { input: { ...input, ...(profile ? { profile } : {}) }, explicit }
+    const rememberedProfile = !options.reuse && !explicit && process.platform === 'win32'
+      ? lastWindowsTerminalProfile
+      : undefined
+    const profile = options.reuse && !explicit ? undefined : input.profile ?? rememberedProfile
+    return {
+      input: { ...input, ...(profile ? { profile } : {}) },
+      explicit,
+      usingRememberedProfile: rememberedProfile !== undefined && rememberedProfile !== 'default',
+    }
   }
   const recordExplicitProfile = (profile: TerminalProfile, explicit: boolean): void => {
     if (!explicit || process.platform !== 'win32') return
@@ -1363,6 +1368,15 @@ function buildAgentTerminalTools(sdk: PiSdk, ctx: PiBuiltinToolsContext): ToolDe
       lastWindowsTerminalProfile = profile
     } catch (error) {
       console.warn('[终端] 保存最近 Shell 失败:', error)
+    }
+  }
+  const clearUnavailableRememberedProfile = (profile: TerminalProfile, usingRememberedProfile: boolean): void => {
+    if (!usingRememberedProfile || profile !== 'default' || process.platform !== 'win32') return
+    lastWindowsTerminalProfile = undefined
+    try {
+      updateSettings({ lastWindowsTerminalProfile: undefined })
+    } catch (error) {
+      console.warn('[终端] 清理不可用的最近 Shell 失败:', error)
     }
   }
   const agentContext = { sessionId: ctx.sessionId, agentCwd: ctx.agentCwd, allowedRoots: ctx.allowedRoots }
@@ -1380,9 +1394,10 @@ function buildAgentTerminalTools(sdk: PiSdk, ctx: PiBuiltinToolsContext): ToolDe
       }),
       async execute(_toolCallId, params) {
         const args = params as Record<string, unknown>
-        const { input, explicit } = resolveTerminalInput(args)
-        const record = await openAgentTerminal({ ...agentContext, ...input })
+        const { input, explicit, usingRememberedProfile } = resolveTerminalInput(args)
+        const record = await openAgentTerminal({ ...agentContext, ...input, fallbackToDefaultProfile: usingRememberedProfile })
         recordExplicitProfile(record.profile, explicit)
+        clearUnavailableRememberedProfile(record.profile, usingRememberedProfile)
         return jsonToolResult({ terminal: record, visible: true, outputSharedWithAgent: false })
       },
     }),
@@ -1405,9 +1420,12 @@ function buildAgentTerminalTools(sdk: PiSdk, ctx: PiBuiltinToolsContext): ToolDe
         const terminalId = typeof args.terminalId === 'string' && args.terminalId.trim()
           ? args.terminalId.trim()
           : undefined
-        const { input, explicit } = resolveTerminalInput(args, { reuse: Boolean(terminalId) })
-        const record = await executeAgentTerminal({ ...agentContext, ...input, command, terminalId })
-        if (!terminalId) recordExplicitProfile(record.profile, explicit)
+        const { input, explicit, usingRememberedProfile } = resolveTerminalInput(args, { reuse: Boolean(terminalId) })
+        const record = await executeAgentTerminal({ ...agentContext, ...input, command, terminalId, fallbackToDefaultProfile: usingRememberedProfile })
+        if (!terminalId) {
+          recordExplicitProfile(record.profile, explicit)
+          clearUnavailableRememberedProfile(record.profile, usingRememberedProfile)
+        }
         return jsonToolResult({ terminal: record, commandStarted: true, reused: Boolean(terminalId), outputSharedWithAgent: false })
       },
     }),

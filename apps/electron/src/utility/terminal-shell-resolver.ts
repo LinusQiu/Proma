@@ -76,7 +76,11 @@ function resolveWindowsShell(
     return { file: gitBash, args: ['--login', '-i'], title: 'Git Bash' }
   }
   if (profile === 'cmd') return { file: env.ComSpec || 'cmd.exe', args: [], title: 'Command Prompt' }
-  if (profile === 'pwsh' || profile === 'powershell') return { file: 'pwsh.exe', args: ['-NoLogo'], title: 'PowerShell' }
+  if (profile === 'pwsh') return { file: 'pwsh.exe', args: ['-NoLogo'], title: 'PowerShell 7' }
+  if (profile === 'powershell') {
+    if (!canExecute(powershell)) throw new Error('Windows PowerShell 不存在或不可执行')
+    return { file: powershell, args: ['-NoLogo'], title: 'Windows PowerShell' }
+  }
   // 默认使用系统 Windows PowerShell；PowerShell 7、Git Bash 与 WSL 由 profile 显式选择。
   if (profile === 'default' && canExecute(powershell)) return { file: powershell, args: ['-NoLogo'], title: 'PowerShell' }
   if (profile === 'default') return { file: env.ComSpec || 'cmd.exe', args: [], title: 'Command Prompt' }

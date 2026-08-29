@@ -143,6 +143,8 @@ export async function openAgentTerminal(input: {
   cwd?: string
   title?: string
   profile?: unknown
+  /** 仅用于未显式指定的 Windows 历史 profile；创建失败时安全回退到 default。 */
+  fallbackToDefaultProfile?: boolean
   agentCwd?: string
   allowedRoots?: string[]
 }): Promise<AgentTerminalRecord> {
@@ -150,8 +152,15 @@ export async function openAgentTerminal(input: {
   const profile = assertTerminalProfileSupported(parseTerminalProfile(input.profile), process.platform)
   const terminalId = randomUUID()
   const title = input.title?.trim().slice(0, 80) || 'Agent 终端'
-  await createTerminal({ terminalId, sessionId: input.sessionId, cwd, profile, cols: 80, rows: 24 }, { strictCwd: true })
-  const record: AgentTerminalRecord = { sessionId: input.sessionId, terminalId, title, cwd, profile, status: 'running' }
+  let resolvedProfile = profile
+  try {
+    await createTerminal({ terminalId, sessionId: input.sessionId, cwd, profile: resolvedProfile, cols: 80, rows: 24 }, { strictCwd: true })
+  } catch (error) {
+    if (!input.fallbackToDefaultProfile || profile === 'default') throw error
+    resolvedProfile = 'default'
+    await createTerminal({ terminalId, sessionId: input.sessionId, cwd, profile: resolvedProfile, cols: 80, rows: 24 }, { strictCwd: true })
+  }
+  const record: AgentTerminalRecord = { sessionId: input.sessionId, terminalId, title, cwd, profile: resolvedProfile, status: 'running' }
   agentTerminals.set(terminalId, record)
   notifyAgentTerminalOpen(record)
   return record
@@ -168,6 +177,8 @@ export async function executeAgentTerminal(input: {
   terminalId?: string
   /** 仅在创建新终端时生效；复用已有终端时必须与其 profile 一致。 */
   profile?: unknown
+  /** 仅在新建终端且使用 Windows 历史 profile 时生效。 */
+  fallbackToDefaultProfile?: boolean
   cwd?: string
   title?: string
   agentCwd?: string
